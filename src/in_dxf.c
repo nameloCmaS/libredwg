@@ -380,6 +380,18 @@ xcalloc (size_t n, size_t s)
 
 #ifndef DISABLE_DXF
 
+static void
+free_SPLINE_knot_ctrl_data (Dwg_Entity_SPLINE *restrict spline)
+{
+  if (!spline)
+    return;
+
+  free (spline->knots);
+  spline->knots = NULL;
+  free (spline->ctrl_pts);
+  spline->ctrl_pts = NULL;
+}
+
 /* With mips32 -O2 inline would fail. */
 static void
 dxf_skip_ws (Bit_Chain *dat)
@@ -7883,7 +7895,10 @@ add_SPLINE (Dwg_Entity_SPLINE *restrict o, Bit_Chain *restrict dat,
           LOG_TRACE ("=> SPLINE.weighted = 1 [B 0] (bit 4)\n");
         }
       if (flag & 32)
-        o->scenario = 2; // bezier: planar
+        {
+          o->scenario = 2; // bezier: planar
+          free_SPLINE_knot_ctrl_data (o);
+        }
       else
         o->scenario = 1;
       LOG_TRACE ("=> SPLINE.scenario = %d [BL 0]\n", o->scenario);
@@ -7897,8 +7912,15 @@ add_SPLINE (Dwg_Entity_SPLINE *restrict o, Bit_Chain *restrict dat,
     }
   else if (pair->code == 72)
     {
+      free (o->knots);
+      o->knots = NULL;
       o->num_knots = pair->value.i;
       *jp = 0;
+      if (o->scenario == 2)
+        {
+          LOG_TRACE ("SPLINE.num_knots = %d [BS 72]\n", o->num_knots);
+          return 1; // found
+        }
       o->knots = (BITCODE_BD *)xcalloc (o->num_knots, sizeof (BITCODE_BD));
       if (!o->knots)
         {
@@ -7910,8 +7932,15 @@ add_SPLINE (Dwg_Entity_SPLINE *restrict o, Bit_Chain *restrict dat,
     }
   else if (pair->code == 73)
     {
+      free (o->ctrl_pts);
+      o->ctrl_pts = NULL;
       o->num_ctrl_pts = pair->value.i;
       *jp = 0;
+      if (o->scenario == 2)
+        {
+          LOG_TRACE ("SPLINE.num_ctrl_pts = %d [BS 73]\n", o->num_ctrl_pts);
+          return 1; // found
+        }
       o->ctrl_pts = (Dwg_SPLINE_control_point *)xcalloc (
           o->num_ctrl_pts, sizeof (Dwg_SPLINE_control_point));
       if (!o->ctrl_pts)
@@ -7924,6 +7953,8 @@ add_SPLINE (Dwg_Entity_SPLINE *restrict o, Bit_Chain *restrict dat,
     }
   else if (pair->code == 74)
     {
+      free (o->fit_pts);
+      o->fit_pts = NULL;
       o->num_fit_pts = pair->value.i;
       *jp = 0;
       o->fit_pts
@@ -7941,6 +7972,8 @@ add_SPLINE (Dwg_Entity_SPLINE *restrict o, Bit_Chain *restrict dat,
     }
   else if (pair->code == 40) // knots[] BD*
     {
+      if (o->scenario == 2)
+        return 1; // found
       if (!o->knots || j >= (int)o->num_knots)
         {
           LOG_ERROR ("SPLINE.knots[%d] overflow, max %d", *jp, o->num_knots);
@@ -7956,6 +7989,8 @@ add_SPLINE (Dwg_Entity_SPLINE *restrict o, Bit_Chain *restrict dat,
     }
   else if (pair->code == 10) // ctrl_pts[].x 3BD
     {
+      if (o->scenario == 2)
+        return 1; // found
       if (!o->ctrl_pts || j >= (int)o->num_ctrl_pts)
         {
           LOG_ERROR ("SPLINE.ctrl_pts[%d] overflow, max %d", *jp,
@@ -7968,6 +8003,8 @@ add_SPLINE (Dwg_Entity_SPLINE *restrict o, Bit_Chain *restrict dat,
     }
   else if (pair->code == 20) // ctrl_pts[].y 3BD
     {
+      if (o->scenario == 2)
+        return 1; // found
       if (!o->ctrl_pts || j >= (int)o->num_ctrl_pts)
         {
           LOG_ERROR ("SPLINE.ctrl_pts[%d] overflow, max %d", j,
@@ -7979,6 +8016,8 @@ add_SPLINE (Dwg_Entity_SPLINE *restrict o, Bit_Chain *restrict dat,
     }
   else if (pair->code == 30) // ctrl_pts[].z 3BD
     {
+      if (o->scenario == 2)
+        return 1; // found
       if (!o->ctrl_pts || j >= (int)o->num_ctrl_pts)
         {
           LOG_ERROR ("SPLINE.ctrl_pts[%d] overflow, max %d", j,
@@ -7996,6 +8035,8 @@ add_SPLINE (Dwg_Entity_SPLINE *restrict o, Bit_Chain *restrict dat,
     }
   else if (pair->code == 41) // ctrl_pts[].w 3BD
     {
+      if (o->scenario == 2)
+        return 1; // found
       if (j == 0)
         j = (int)o->num_ctrl_pts;
       j--;
