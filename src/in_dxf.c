@@ -380,6 +380,86 @@ xcalloc (size_t n, size_t s)
 
 #ifndef DISABLE_DXF
 
+static void
+free_LEADER_line_data (Dwg_LEADER_Line *restrict line)
+{
+  if (!line)
+    return;
+
+  free (line->points);
+  line->points = NULL;
+  line->num_points = 0;
+  free (line->breaks);
+  line->breaks = NULL;
+  line->num_breaks = 0;
+}
+
+static void
+free_LEADER_node_lines (Dwg_LEADER_Node *restrict node)
+{
+  BITCODE_BL i;
+
+  if (!node || !node->lines)
+    return;
+
+  for (i = 0; i < node->num_lines; i++)
+    free_LEADER_line_data (&node->lines[i]);
+  free (node->lines);
+  node->lines = NULL;
+  node->num_lines = 0;
+}
+
+static void
+free_LEADER_node_data (Dwg_LEADER_Node *restrict node)
+{
+  if (!node)
+    return;
+
+  free_LEADER_node_lines (node);
+  free (node->breaks);
+  node->breaks = NULL;
+  node->num_breaks = 0;
+}
+
+static void
+free_MLEADER_leaders (Dwg_MLEADER_AnnotContext *restrict ctx)
+{
+  BITCODE_BL i;
+
+  if (!ctx || !ctx->leaders)
+    return;
+
+  for (i = 0; i < ctx->num_leaders; i++)
+    free_LEADER_node_data (&ctx->leaders[i]);
+  free (ctx->leaders);
+  ctx->leaders = NULL;
+  ctx->num_leaders = 0;
+}
+
+static void
+free_MLEADER_context_data (Dwg_MLEADER_AnnotContext *restrict ctx)
+{
+  if (!ctx)
+    return;
+
+  free_MLEADER_leaders (ctx);
+  if (ctx->has_content_txt)
+    {
+      free (ctx->content.txt.default_text);
+      ctx->content.txt.default_text = NULL;
+      free (ctx->content.txt.col_sizes);
+      ctx->content.txt.col_sizes = NULL;
+      ctx->content.txt.num_col_sizes = 0;
+    }
+  else if (ctx->has_content_blk)
+    {
+      free (ctx->content.blk.transform);
+      ctx->content.blk.transform = NULL;
+    }
+  ctx->has_content_txt = 0;
+  ctx->has_content_blk = 0;
+}
+
 /* With mips32 -O2 inline would fail. */
 static void
 dxf_skip_ws (Bit_Chain *dat)
@@ -4061,7 +4141,7 @@ add_MULTILEADER_lines (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
       dxf_free_pair (pair);
       return NULL;
     }
-  lnode->num_lines = 0;
+  free_LEADER_node_lines (lnode);
   if (pair->code == 304 && strEQc (pair->value.s.ptr, "LEADER_LINE{"))
     {
       int i = -1, j = -1, k = -1;
@@ -4087,28 +4167,40 @@ add_MULTILEADER_lines (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
             {
             case 10:
               i++;
-              lnode->num_lines = i + 1;
               LOG_TRACE ("%s.leaders[].num_lines = %d\n", obj->name, i + 1);
               if (i > 0)
                 {
-                  lnode->lines = (Dwg_LEADER_Line *)realloc (
+                  Dwg_LEADER_Line *lines;
+                  lines = (Dwg_LEADER_Line *)realloc (
                       lnode->lines,
                       lnode->num_lines * sizeof (Dwg_LEADER_Line));
-                  if (!lnode->lines)
+                  if (!lines)
                     {
-                      lnode->num_lines = 0;
                       LOG_ERROR ("Out of memory");
                       dxf_free_pair (pair);
                       return NULL;
                     }
+                  lnode->lines = lines;
                 }
+              lnode->num_lines = i + 1;
               lline = &lnode->lines[i];
               memset (lline, 0, sizeof (Dwg_LEADER_Line));
               lline->num_breaks = 0;
               j++;
               lline->num_points = j + 1;
-              lline->points = (BITCODE_3BD *)realloc (
-                  lline->points, lline->num_points * sizeof (BITCODE_3BD));
+              {
+                BITCODE_3BD *points;
+                points = (BITCODE_3BD *)realloc (
+                    lline->points, lline->num_points * sizeof (BITCODE_3BD));
+                if (!points)
+                  {
+                    lline->num_points = 0;
+                    LOG_ERROR ("Out of memory");
+                    dxf_free_pair (pair);
+                    return NULL;
+                  }
+                lline->points = points;
+              }
               memset (&lline->points[j], 0, sizeof (BITCODE_3BD));
               lline->points[j].x = pair->value.d;
               LOG_TRACE ("%s.leaders[].lines[%d].points[%d].x = %f [BD %d]\n",
@@ -4148,8 +4240,19 @@ add_MULTILEADER_lines (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
               CHK_points;
               k++;
               lline->num_breaks = k + 1;
-              lline->breaks = (Dwg_LEADER_Break *)realloc (
-                  lline->breaks, (k + 1) * sizeof (Dwg_LEADER_Break));
+              {
+                Dwg_LEADER_Break *breaks;
+                breaks = (Dwg_LEADER_Break *)realloc (
+                    lline->breaks, (k + 1) * sizeof (Dwg_LEADER_Break));
+                if (!breaks)
+                  {
+                    lline->num_breaks = 0;
+                    LOG_ERROR ("Out of memory");
+                    dxf_free_pair (pair);
+                    return NULL;
+                  }
+                lline->breaks = breaks;
+              }
               memset (&ctx->leaders[k], 0, sizeof (Dwg_LEADER_Break));
               lline->breaks[k].start.x = pair->value.d;
               LOG_TRACE (
@@ -4285,6 +4388,7 @@ add_MULTILEADER_leaders (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
     {
       int i = -1, j = -1;
       Dwg_MLEADER_AnnotContext *ctx = &o->ctx;
+      free_MLEADER_leaders (ctx);
       ctx->num_leaders = 0;
       while (pair != NULL && pair->code != 303 && pair->code != 0)
         {
@@ -4305,12 +4409,16 @@ add_MULTILEADER_leaders (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
             {
             case 290:
               i++;
-              ctx->num_leaders = i + 1;
               LOG_TRACE ("%s.ctx.num_leaders = %d\n", obj->name, i + 1);
-              ctx->leaders = (Dwg_LEADER_Node *)realloc (
-                  ctx->leaders, (i + 1) * sizeof (Dwg_LEADER_Node));
-              if (!ctx->leaders)
-                return NULL;
+              {
+                Dwg_LEADER_Node *leaders;
+                leaders = (Dwg_LEADER_Node *)realloc (
+                    ctx->leaders, (i + 1) * sizeof (Dwg_LEADER_Node));
+                if (!leaders)
+                  return NULL;
+                ctx->leaders = leaders;
+              }
+              ctx->num_leaders = i + 1;
               memset (&ctx->leaders[i], 0, sizeof (Dwg_LEADER_Node));
               ctx->leaders[i].has_lastleaderlinepoint = pair->value.i;
               LOG_TRACE (
@@ -4369,8 +4477,17 @@ add_MULTILEADER_leaders (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
                   lnode->num_breaks = j + 1;
                   LOG_TRACE ("%s.leaders[%d].num_breaks = %d\n", obj->name, i,
                              j + 1);
-                  lnode->breaks = (Dwg_LEADER_Break *)realloc (
-                      lnode->breaks, (j + 1) * sizeof (Dwg_LEADER_Break));
+                  {
+                    Dwg_LEADER_Break *breaks;
+                    breaks = (Dwg_LEADER_Break *)realloc (
+                        lnode->breaks, (j + 1) * sizeof (Dwg_LEADER_Break));
+                    if (!breaks)
+                      {
+                        lnode->num_breaks = 0;
+                        return NULL;
+                      }
+                    lnode->breaks = breaks;
+                  }
                   lnode->breaks[j].start.x = pair->value.d;
                   LOG_TRACE (
                       "%s.ctx.leaders[%d].breaks[%d].start.x = %f [3BD %d]\n",
@@ -4463,6 +4580,7 @@ add_MULTILEADER (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
       // const Dwg_DYNAPI_field *fields
       // = dwg_dynapi_subclass_fields ("MLEADER_AnnotContext");
       Dwg_MLEADER_AnnotContext *ctx = &o->ctx;
+      free_MLEADER_context_data (ctx);
       while (pair != NULL && pair->code != 301 && pair->code != 0)
         {
           switch (pair->code)
@@ -4537,6 +4655,8 @@ add_MULTILEADER (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
                 {
                   if (ctx->has_content_blk)
                     goto unknown_mleader;
+                  free (ctx->content.txt.default_text);
+                  ctx->content.txt.default_text = NULL;
                   if (dat->version >= R_2007)
                     ctx->content.txt.default_text
                         = (char *)bit_utf8_to_TU (pair->value.s.ptr, 0);
@@ -4755,9 +4875,15 @@ add_MULTILEADER (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
               if (!ctx->has_content_txt)
                 goto unknown_mleader;
               i++;
+              {
+                double *col_sizes;
+                col_sizes = (double *)realloc (ctx->content.txt.col_sizes,
+                                               (i + 1) * sizeof (double));
+                if (!col_sizes)
+                  return NULL;
+                ctx->content.txt.col_sizes = col_sizes;
+              }
               ctx->content.txt.num_col_sizes = i + 1;
-              ctx->content.txt.col_sizes = (double *)realloc (
-                  ctx->content.txt.col_sizes, (i + 1) * sizeof (double));
               ctx->content.txt.col_sizes[i] = pair->value.d;
               LOG_TRACE ("%s.ctx.content.txt.col_sizes[%d] = %f [BD %d]\n",
                          obj->name, i, pair->value.d, pair->code);
