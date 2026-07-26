@@ -1,0 +1,64 @@
+  0
+SECTION
+  2
+HEADER
+  9
+$ACADVER
+  1
+AC1032
+  9
+$DWGCODEPAGE
+  3
+ANSI_1252
+  9
+$INSBASE
+ 10
+0.0
+ 20
+0.0
+ 30
+0.0
+  9
+$EXTMIN
+ 10
+0.0
+ 20
+0.0
+ 30
+0.0
+  0
+ENDSEC
+  0
+SECTION
+  2
+ENTITIES
+  0
+MESH
+100
+AcDbEntity
+  8
+0
+100
+AcDbSubDMesh
+ 91
+1
+ 92
+1
+ 92
+1
+ 93
+1
+ 93
+1
+ 94
+1
+ 94
+1
+ 95
+1
+ 95
+1
+  0
+ENDSEC
+  0
+EOF
