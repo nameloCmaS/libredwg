@@ -60,6 +60,7 @@ EXTRA_DIST = $(top_srcdir)/.version libredwg.spec vcpkg.json build-aux/Dockerfil
 	     llvmfuzz_standalone_tz.sh llvmfuzz_standalone_data.sh \
 	     cmp-objs.pl .dockerignore \
 	     build-aux/swig_python.patch \
+	     test/ossfuzz/outdxf/mesh-repeated-vectors.dxf \
              $(JSON_DIST) \
 	     $(VALGRIND_SUPPRESSIONS_FILES)
 shell_sources = dwg.in dxf.in dxf-allcvt.sh test-dxf.sh dxf-check dxfb-check \
