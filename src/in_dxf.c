@@ -502,6 +502,30 @@ free_LWPOLYLINE_data (Dwg_Entity_LWPOLYLINE *restrict lwpolyline)
   lwpolyline->num_widths = 0;
 }
 
+static void
+free_3DSOLID_encr_data (Dwg_Entity_3DSOLID *restrict solid)
+{
+  BITCODE_BL i;
+  BITCODE_BL num_blocks;
+
+  if (!solid)
+    return;
+
+  num_blocks = solid->num_blocks ? solid->num_blocks : 1;
+  if (solid->encr_sat_data)
+    {
+      for (i = 0; i < num_blocks; i++)
+        free (solid->encr_sat_data[i]);
+      free (solid->encr_sat_data);
+      solid->encr_sat_data = NULL;
+    }
+  free (solid->block_size);
+  solid->block_size = NULL;
+  free (solid->acis_data);
+  solid->acis_data = NULL;
+  solid->num_blocks = 0;
+}
+
 /* With mips32 -O2 inline would fail. */
 static void
 dxf_skip_ws (Bit_Chain *dat)
@@ -2877,6 +2901,7 @@ add_3DSOLID_encr (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
   Dwg_Entity_3DSOLID *o = obj->tio.entity->tio._3DSOLID;
   size_t i = 0;
   size_t total = 0;
+  free_3DSOLID_encr_data (o);
   o->num_blocks = 1;
   o->encr_sat_data = (char **)xcalloc (2, sizeof (char *));
   if (!o->encr_sat_data)
@@ -2888,7 +2913,7 @@ add_3DSOLID_encr (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
   o->block_size = (BITCODE_BL *)xcalloc (2, sizeof (BITCODE_BL));
   if (!o->block_size)
     {
-      o->num_blocks = 0;
+      free_3DSOLID_encr_data (o);
       return NULL;
     }
 
@@ -2906,6 +2931,7 @@ add_3DSOLID_encr (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
         {
           LOG_ERROR ("Overlarge DXF string len %" PRIuSIZE ": %s", len,
                      pair->value.s.ptr);
+          free_3DSOLID_encr_data (o);
           return NULL;
         }
       if (!total || !o->encr_sat_data[0])
@@ -2915,6 +2941,7 @@ add_3DSOLID_encr (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
           if (!o->encr_sat_data[0])
             {
               LOG_ERROR ("Out of memory");
+              free_3DSOLID_encr_data (o);
               return NULL;
             }
           // memcpy (o->encr_sat_data[0], pair->value.s.ptr, len + 1);
@@ -2922,14 +2949,16 @@ add_3DSOLID_encr (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
         }
       else
         {
+          char *str;
           total += len;
-          o->encr_sat_data[0]
-              = (char *)realloc (o->encr_sat_data[0], total + 1);
-          if (!o->encr_sat_data[0])
+          str = (char *)realloc (o->encr_sat_data[0], total + 1);
+          if (!str)
             {
               LOG_ERROR ("Out of memory");
+              free_3DSOLID_encr_data (o);
               return NULL;
             }
+          o->encr_sat_data[0] = str;
           strcat ((char *)o->encr_sat_data[0], pair->value.s.ptr);
         }
       if (pair->code == 1)
@@ -2950,7 +2979,10 @@ add_3DSOLID_encr (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
       o->unknown = 1; // ??
       o->acis_data = (BITCODE_RC *)xcalloc (1, total + 1);
       if (!o->acis_data)
-        return NULL;
+        {
+          free_3DSOLID_encr_data (o);
+          return NULL;
+        }
       for (i = 0; i < total; i++)
         {
           if (o->encr_sat_data[0][i] == '^' && i <= total
