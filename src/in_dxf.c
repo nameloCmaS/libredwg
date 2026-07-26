@@ -380,6 +380,54 @@ xcalloc (size_t n, size_t s)
 
 #ifndef DISABLE_DXF
 
+static void
+free_MLINE_line_data (Dwg_MLINE_line *restrict line)
+{
+  if (!line)
+    return;
+
+  free (line->segparms);
+  line->segparms = NULL;
+  line->num_segparms = 0;
+  free (line->areafillparms);
+  line->areafillparms = NULL;
+  line->num_areafillparms = 0;
+}
+
+static void
+free_MLINE_vertex_lines (Dwg_Entity_MLINE *restrict mline)
+{
+  int i;
+  int j;
+
+  if (!mline || !mline->verts)
+    return;
+
+  for (i = 0; i < (int)mline->num_verts; i++)
+    {
+      if (mline->verts[i].lines)
+        {
+          for (j = 0; j < (int)mline->num_lines; j++)
+            free_MLINE_line_data (&mline->verts[i].lines[j]);
+          free (mline->verts[i].lines);
+          mline->verts[i].lines = NULL;
+          mline->verts[i].num_lines = 0;
+        }
+    }
+}
+
+static void
+free_MLINE_verts (Dwg_Entity_MLINE *restrict mline)
+{
+  if (!mline)
+    return;
+
+  free_MLINE_vertex_lines (mline);
+  free (mline->verts);
+  mline->verts = NULL;
+  mline->num_verts = 0;
+}
+
 /* With mips32 -O2 inline would fail. */
 static void
 dxf_skip_ws (Bit_Chain *dat)
@@ -8088,6 +8136,7 @@ add_MLINE (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
                   o->num_lines, sizeof (Dwg_MLINE_line));
               if (!o->verts[_j].lines)
                 {
+                  free_MLINE_verts (o);
                   o->num_lines = 0;
                   return 2;
                 }
@@ -8112,6 +8161,7 @@ add_MLINE (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
                   o->num_lines, sizeof (Dwg_MLINE_line));
               if (!o->verts[_j].lines)
                 {
+                  free_MLINE_vertex_lines (o);
                   o->num_lines = 0;
                   return 2;
                 }
@@ -8205,13 +8255,18 @@ add_MLINE (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
 
       CHK_lines;
       o->verts[j].lines[k].parent = &o->verts[j];
+      free (o->verts[j].lines[k].segparms);
+      o->verts[j].lines[k].segparms = NULL;
       o->verts[j].lines[k].num_segparms = pair->value.i;
-      o->verts[j].lines[k].segparms
-          = (BITCODE_BD *)xcalloc (pair->value.i, sizeof (BITCODE_BD));
-      if (!o->verts[j].lines[k].segparms)
+      if (pair->value.i > 0)
         {
-          o->verts[j].lines[k].num_segparms = 0;
-          return 2;
+          o->verts[j].lines[k].segparms
+              = (BITCODE_BD *)xcalloc (pair->value.i, sizeof (BITCODE_BD));
+          if (!o->verts[j].lines[k].segparms)
+            {
+              o->verts[j].lines[k].num_segparms = 0;
+              return 2;
+            }
         }
       LOG_TRACE ("MLINE.v[%d].l[%d].num_segparms = %d [BS 74]\n", j, k,
                  pair->value.i);
@@ -8238,10 +8293,22 @@ add_MLINE (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
     {
       CHK_verts;
       CHK_lines;
+      free (o->verts[j].lines[k].areafillparms);
+      o->verts[j].lines[k].areafillparms = NULL;
       o->verts[j].lines[k].num_areafillparms = pair->value.i;
       LOG_TRACE ("MLINE.v[%d].l[%d].num_areafillparms = %d [BS 75]\n", j, k,
                  pair->value.i);
-      if (!pair->value.i)
+      if (pair->value.i > 0)
+        {
+          o->verts[j].lines[k].areafillparms
+              = (BITCODE_BD *)xcalloc (pair->value.i, sizeof (BITCODE_BD));
+          if (!o->verts[j].lines[k].areafillparms)
+            {
+              o->verts[j].lines[k].num_areafillparms = 0;
+              return 2;
+            }
+        }
+      else
         {
           k++; // next line
           if (k == o->num_lines)
