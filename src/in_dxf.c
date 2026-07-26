@@ -526,6 +526,25 @@ free_3DSOLID_encr_data (Dwg_Entity_3DSOLID *restrict solid)
   solid->num_blocks = 0;
 }
 
+static void
+free_TABLEGEOMETRY_cells (Dwg_Object_TABLEGEOMETRY *restrict tablegeometry)
+{
+  BITCODE_BL i;
+
+  if (!tablegeometry || !tablegeometry->cells)
+    return;
+
+  for (i = 0; i < tablegeometry->num_cells; i++)
+    {
+      free (tablegeometry->cells[i].geometry);
+      tablegeometry->cells[i].geometry = NULL;
+      tablegeometry->cells[i].num_geometry = 0;
+    }
+  free (tablegeometry->cells);
+  tablegeometry->cells = NULL;
+  tablegeometry->num_cells = 0;
+}
+
 /* With mips32 -O2 inline would fail. */
 static void
 dxf_skip_ws (Bit_Chain *dat)
@@ -5852,9 +5871,11 @@ add_TABLEGEOMETRY_Cell (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
 
   if (num_cells < 1)
     {
+      free_TABLEGEOMETRY_cells (o);
       return NULL;
     }
 
+  free_TABLEGEOMETRY_cells (o);
   o->cells = (Dwg_TABLEGEOMETRY_Cell *)xcalloc (
       num_cells, sizeof (Dwg_TABLEGEOMETRY_Cell));
   if (!o->cells)
@@ -5862,6 +5883,7 @@ add_TABLEGEOMETRY_Cell (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
       o->num_cells = 0;
       return NULL;
     }
+  o->num_cells = num_cells;
 
   while (pair != NULL && pair->code != 0)
     {
@@ -5913,6 +5935,8 @@ add_TABLEGEOMETRY_Cell (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
           break;
         case 94:
           CHK_cells;
+          free (o->cells[i].geometry);
+          o->cells[i].geometry = NULL;
           o->cells[i].num_geometry = pair->value.i;
           LOG_TRACE ("%s.cells[%d].num_geometry = " FORMAT_BL " [BL %d]\n",
                      obj->name, i, o->cells[i].num_geometry, pair->code);
