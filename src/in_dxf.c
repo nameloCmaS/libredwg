@@ -807,6 +807,113 @@ free_MLEADER_context_data (Dwg_MLEADER_AnnotContext *restrict ctx)
   ctx->has_content_blk = 0;
 }
 
+static void
+free_HATCH_path_data (Dwg_HATCH_Path *restrict path)
+{
+  BITCODE_BL i;
+
+  if (!path)
+    return;
+
+  if (path->segs)
+    {
+      for (i = 0; i < path->num_segs_or_paths; i++)
+        {
+          free (path->segs[i].knots);
+          path->segs[i].knots = NULL;
+          path->segs[i].num_knots = 0;
+          free (path->segs[i].control_points);
+          path->segs[i].control_points = NULL;
+          path->segs[i].num_control_points = 0;
+          free (path->segs[i].fitpts);
+          path->segs[i].fitpts = NULL;
+          path->segs[i].num_fitpts = 0;
+        }
+      free (path->segs);
+      path->segs = NULL;
+    }
+  free (path->polyline_paths);
+  path->polyline_paths = NULL;
+  free (path->boundary_handles);
+  path->boundary_handles = NULL;
+  path->num_segs_or_paths = 0;
+  path->num_boundary_handles = 0;
+}
+
+static void
+free_HATCH_paths (Dwg_Entity_HATCH *restrict hatch)
+{
+  BITCODE_BL i;
+
+  if (!hatch)
+    return;
+
+  if (hatch->paths)
+    {
+      for (i = 0; i < hatch->num_paths; i++)
+        free_HATCH_path_data (&hatch->paths[i]);
+      free (hatch->paths);
+      hatch->paths = NULL;
+    }
+  hatch->num_paths = 0;
+}
+
+static void
+free_HATCH_deflines (Dwg_Entity_HATCH *restrict hatch)
+{
+  BITCODE_BL i;
+
+  if (!hatch)
+    return;
+
+  if (hatch->deflines)
+    {
+      for (i = 0; i < hatch->num_deflines; i++)
+        {
+          free (hatch->deflines[i].dashes);
+          hatch->deflines[i].dashes = NULL;
+          hatch->deflines[i].num_dashes = 0;
+        }
+      free (hatch->deflines);
+      hatch->deflines = NULL;
+    }
+  hatch->num_deflines = 0;
+}
+
+static void
+free_HATCH_colors (Dwg_Entity_HATCH *restrict hatch)
+{
+  BITCODE_BL i;
+
+  if (!hatch)
+    return;
+
+  if (hatch->colors)
+    {
+      for (i = 0; i < hatch->num_colors; i++)
+        {
+          free (hatch->colors[i].color.name);
+          hatch->colors[i].color.name = NULL;
+          free (hatch->colors[i].color.book_name);
+          hatch->colors[i].color.book_name = NULL;
+        }
+      free (hatch->colors);
+      hatch->colors = NULL;
+    }
+  hatch->num_colors = 0;
+}
+
+static void
+free_HATCH_seeds (Dwg_Entity_HATCH *restrict hatch)
+{
+  if (!hatch)
+    return;
+
+  free (hatch->seeds);
+  hatch->seeds = NULL;
+  hatch->num_seeds = 0;
+}
+
 /* With mips32 -O2 inline would fail. */
 static void
 dxf_skip_ws (Bit_Chain *dat)
@@ -3546,6 +3653,7 @@ add_HATCH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
   // valid entry codes
   if (pair->code == 91)
     {
+      free_HATCH_paths (o);
       o->num_paths = pair->value.u;
       LOG_TRACE ("HATCH.num_paths = %u [BS 91]\n", o->num_paths);
       o->paths
@@ -3559,6 +3667,7 @@ add_HATCH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
     }
   else if (pair->code == 78)
     {
+      free_HATCH_deflines (o);
       o->num_deflines = pair->value.l;
       LOG_TRACE ("HATCH.num_deflines = %ld [BS 78]\n", pair->value.l);
       o->deflines = (Dwg_HATCH_DefLine *)xcalloc (pair->value.l,
@@ -3572,6 +3681,7 @@ add_HATCH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
     }
   if (pair->code == 453)
     {
+      free_HATCH_colors (o);
       o->num_colors = pair->value.l;
       LOG_TRACE ("HATCH.num_colors = %ld [BL 453]\n", pair->value.l);
       o->colors = (Dwg_HATCH_Color *)xcalloc (pair->value.l,
@@ -3601,8 +3711,7 @@ add_HATCH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
         LOG_ERROR ("HATCH no paths or wrong j %u\n", j);                      \
         if (o->paths)                                                         \
           {                                                                   \
-            free (o->paths);                                                  \
-            o->paths = NULL;                                                  \
+            free_HATCH_paths (o);                                             \
           }                                                                   \
         o->num_paths = 0;                                                     \
         dxf_free_pair (pair);                                                 \
@@ -3626,6 +3735,7 @@ add_HATCH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
       else if (pair->code == 93)
         {
           CHK_paths;
+          free_HATCH_path_data (&o->paths[j]);
           o->paths[j].num_segs_or_paths = pair->value.u;
           LOG_TRACE ("HATCH.paths[%d].num_segs_or_paths = %u [BL 93]\n", j,
                      pair->value.u);
@@ -3663,8 +3773,7 @@ add_HATCH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
         LOG_ERROR ("HATCH no paths[%d].segs or wrong k %d\n", j, k);          \
         if (o->paths && o->paths[j].segs)                                     \
           {                                                                   \
-            free (o->paths[j].segs);                                          \
-            o->paths[j].segs = NULL;                                          \
+            free_HATCH_path_data (&o->paths[j]);                              \
           }                                                                   \
         o->paths[j].num_segs_or_paths = 0;                                    \
         dxf_free_pair (pair);                                                 \
@@ -3724,6 +3833,8 @@ add_HATCH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
           knots_left = (int)pair->value.l;
           LOG_TRACE ("HATCH.paths[%d].segs[%d].num_knots = %ld [BL 95]\n", j,
                      k, pair->value.l);
+          free (o->paths[j].segs[k].knots);
+          o->paths[j].segs[k].knots = NULL;
           o->paths[j].segs[k].knots
               = (double *)xcalloc (pair->value.l, sizeof (double));
           if (!o->paths[j].segs[k].knots)
@@ -3742,6 +3853,8 @@ add_HATCH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
           LOG_TRACE (
               "HATCH.paths[%d].segs[%d].num_control_points = %ld [BL 96]\n", j,
               k, pair->value.l);
+          free (o->paths[j].segs[k].control_points);
+          o->paths[j].segs[k].control_points = NULL;
           o->paths[j].segs[k].control_points
               = (Dwg_HATCH_ControlPoint *)xcalloc (
                   pair->value.l, sizeof (Dwg_HATCH_ControlPoint));
@@ -3805,7 +3918,8 @@ add_HATCH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
                    "wrong l %d fitpts index\n",                               \
                    j, l);                                                     \
         o->paths[j].segs[k].num_fitpts = 0;                                   \
-        free(o->paths[j].segs[k].fitpts);                                     \
+        free (o->paths[j].segs[k].fitpts);                                    \
+        o->paths[j].segs[k].fitpts = NULL;                                    \
         dxf_free_pair (pair);                                                 \
         return NULL;                                                          \
       }                                                                       \
@@ -4145,6 +4259,8 @@ add_HATCH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
           if (k < 0 || o->paths[j].segs[k].curve_type != 4)
             {
               next_330_boundary_handles = true;
+              free (o->paths[j].boundary_handles);
+              o->paths[j].boundary_handles = NULL;
               o->paths[j].num_boundary_handles = pair->value.l;
               // o->num_boundary_handles += pair->value.l;
               // each path carries its own handle list; without this reset
@@ -4162,6 +4278,8 @@ add_HATCH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
             {
               CHK_segs;
               next_330_boundary_handles = false;
+              free (o->paths[j].segs[k].fitpts);
+              o->paths[j].segs[k].fitpts = NULL;
               o->paths[j].segs[k].num_fitpts = pair->value.l;
               l = -1; // reset fitpts index
               LOG_TRACE (
@@ -4183,6 +4301,8 @@ add_HATCH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
       else if (pair->code == 97 && is_plpath)
         {
           CHK_paths;
+          free (o->paths[j].boundary_handles);
+          o->paths[j].boundary_handles = NULL;
           o->paths[j].num_boundary_handles = pair->value.l;
           next_330_boundary_handles = true;
           // o->num_boundary_handles += pair->value.l;
@@ -4194,6 +4314,7 @@ add_HATCH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
         }
       else if (pair->code == 78)
         {
+          free_HATCH_deflines (o);
           o->num_deflines = pair->value.l;
           LOG_TRACE ("HATCH.num_deflines = %ld [BS 78]\n", pair->value.l);
           o->deflines = (Dwg_HATCH_DefLine *)xcalloc (
@@ -4259,6 +4380,8 @@ add_HATCH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
           o->deflines[j].num_dashes = pair->value.u;
           LOG_TRACE ("HATCH.deflines[%d].num_dashes = %u [BS 79]\n", j,
                      pair->value.u);
+          free (o->deflines[j].dashes);
+          o->deflines[j].dashes = NULL;
           if (pair->value.u)
             {
               o->deflines[j].dashes
@@ -4301,6 +4424,7 @@ add_HATCH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
         }
       else if (pair->code == 98)
         {
+          free_HATCH_seeds (o);
           o->num_seeds = pair->value.u;
           LOG_TRACE ("HATCH.num_seeds = %u [BL 98]\n", pair->value.u);
           if (pair->value.u)
@@ -4348,26 +4472,30 @@ add_HATCH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
         {
           BITCODE_H ref
               = dwg_add_handleref (obj->parent, 4, pair->value.u, obj);
+          BITCODE_H *boundary_handles;
           CHK_paths;
           hdl_idx++;
           if ((unsigned)hdl_idx > o->paths[j].num_boundary_handles)
             o->paths[j].num_boundary_handles = (unsigned)hdl_idx;
           if (!o->paths[j].boundary_handles)
-            o->paths[j].boundary_handles = (BITCODE_H *)xcalloc (
+            boundary_handles = (BITCODE_H *)xcalloc (
                 o->paths[j].num_boundary_handles, sizeof (BITCODE_H));
           else
-            o->paths[j].boundary_handles = (BITCODE_H *)realloc (
+            boundary_handles = (BITCODE_H *)realloc (
                 o->paths[j].boundary_handles,
                 o->paths[j].num_boundary_handles * sizeof (BITCODE_H));
           LOG_TRACE ("HATCH.paths[%d].num_boundary_handles = %u\n", j,
                      (unsigned)o->paths[j].num_boundary_handles);
-          if (!o->paths[j].boundary_handles)
+          if (!boundary_handles)
             {
+              free (o->paths[j].boundary_handles);
+              o->paths[j].boundary_handles = NULL;
               o->paths[j].num_boundary_handles = 0;
               LOG_ERROR ("! HATCH.paths[%d].boundary_handles", j);
               dxf_free_pair (pair);
               return NULL;
             }
+          o->paths[j].boundary_handles = boundary_handles;
           o->paths[j].boundary_handles[hdl_idx] = ref;
           LOG_TRACE ("HATCH.paths[%d].boundary_handles[%d] = " FORMAT_REF
                      " [H 330]\n",
@@ -4375,6 +4503,7 @@ add_HATCH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
         }
       else if (pair->code == 453)
         {
+          free_HATCH_colors (o);
           o->num_colors = pair->value.u;
           LOG_TRACE ("HATCH.num_colors = %u [BL 453]\n", pair->value.u);
           if (pair->value.u)
@@ -4442,6 +4571,8 @@ add_HATCH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
             }
           assert (j >= 0);
           assert (j < (int)o->num_colors);
+          free (o->colors[j].color.name);
+          o->colors[j].color.name = NULL;
           if (dat->version >= R_2007)
             o->colors[j].color.name
                 = (BITCODE_T)bit_utf8_to_TU (pair->value.s.ptr, 0);
