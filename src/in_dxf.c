@@ -482,6 +482,26 @@ free_LTYPE_dashes (Dwg_Object_LTYPE *restrict ltype)
   ltype->has_strings_area = 0;
 }
 
+static void
+free_LWPOLYLINE_data (Dwg_Entity_LWPOLYLINE *restrict lwpolyline)
+{
+  if (!lwpolyline)
+    return;
+
+  free (lwpolyline->points);
+  lwpolyline->points = NULL;
+  lwpolyline->num_points = 0;
+  free (lwpolyline->bulges);
+  lwpolyline->bulges = NULL;
+  lwpolyline->num_bulges = 0;
+  free (lwpolyline->vertexids);
+  lwpolyline->vertexids = NULL;
+  lwpolyline->num_vertexids = 0;
+  free (lwpolyline->widths);
+  lwpolyline->widths = NULL;
+  lwpolyline->num_widths = 0;
+}
+
 /* With mips32 -O2 inline would fail. */
 static void
 dxf_skip_ws (Bit_Chain *dat)
@@ -2684,6 +2704,7 @@ new_LWPOLYLINE (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
   Dwg_Entity_LWPOLYLINE *o = obj->tio.entity->tio.LWPOLYLINE;
   int j = -1;
 
+  free_LWPOLYLINE_data (o);
   o->num_points = num_points;
   LOG_TRACE ("LWPOLYLINE.num_points = %u [BS 90]\n", num_points);
   o->points = (BITCODE_2RD *)xcalloc (num_points, sizeof (BITCODE_2RD));
@@ -2792,7 +2813,7 @@ new_LWPOLYLINE (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
         }
       else if (pair->code == 91)
         {
-          if (!j)
+          if (!j && !o->vertexids)
             {
               o->vertexids
                   = (BITCODE_BL *)xcalloc (num_points, sizeof (BITCODE_BL));
@@ -2810,7 +2831,7 @@ new_LWPOLYLINE (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
         }
       else if (pair->code == 40) // not const_width
         {
-          if (!j)
+          if (!j && !o->widths)
             {
               o->widths = (Dwg_LWPOLYLINE_width *)xcalloc (
                   num_points, sizeof (Dwg_LWPOLYLINE_width));
