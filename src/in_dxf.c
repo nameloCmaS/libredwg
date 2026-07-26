@@ -380,6 +380,50 @@ xcalloc (size_t n, size_t s)
 
 #ifndef DISABLE_DXF
 
+static void
+free_EVALVARIANT_data (Dwg_EvalVariant *restrict value)
+{
+  if (!value)
+    return;
+
+  if (dwg_resbuf_value_type (value->code) == DWG_VT_STRING)
+    free (value->u.text);
+  memset (value, 0, sizeof (Dwg_EvalVariant));
+}
+
+static void
+free_VALUEPARAM_data (Dwg_VALUEPARAM *restrict value)
+{
+  BITCODE_BL i;
+
+  if (!value)
+    return;
+
+  free (value->name);
+  value->name = NULL;
+  if (value->vars)
+    {
+      for (i = 0; i < value->num_vars; i++)
+        free_EVALVARIANT_data (&value->vars[i].value);
+      free (value->vars);
+      value->vars = NULL;
+    }
+  value->num_vars = 0;
+}
+
+static void
+free_VALUEPARAMs (Dwg_VALUEPARAM *restrict values, BITCODE_BL num_values)
+{
+  BITCODE_BL i;
+
+  if (!values)
+    return;
+
+  for (i = 0; i < num_values; i++)
+    free_VALUEPARAM_data (&values[i]);
+  free (values);
+}
+
 /* With mips32 -O2 inline would fail. */
 static void
 dxf_skip_ws (Bit_Chain *dat)
@@ -6090,6 +6134,7 @@ add_EVALVARIANT (Dwg_Data *restrict dwg, Bit_Chain *restrict dat,
                  Dwg_EvalVariant *value)
 {
   Dxf_Pair *pair = dxf_read_pair (dat);
+  free_EVALVARIANT_data (value);
   EXPECT_DXF ("EvalVariant", code, 70);
   value->code = pair->value.i;
   LOG_TRACE ("%s.%s = %d [BL %d]\n", "EvalVariant", "code", pair->value.i,
@@ -6150,6 +6195,7 @@ add_VALUEPARAMs (Dwg_Data *restrict dwg, Bit_Chain *restrict dat,
                  Dwg_VALUEPARAM *value)
 {
   Dxf_Pair *pair = dxf_read_pair (dat);
+  free_VALUEPARAM_data (value);
   if (pair == NULL || pair->code != 90)
     {
       LOG_ERROR ("%s: Unexpected DXF code %d, expected %d for %s",
