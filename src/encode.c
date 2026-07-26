@@ -8007,11 +8007,32 @@ in_postprocess_SEQEND (Dwg_Object *restrict obj, BITCODE_BL num_owned,
   else if ((dwg->header.from_version <= R_2000 || dwg->opts & DWG_OPTS_INDXF)
            && !owned)
     {
-      BITCODE_H first, last, ref;
+      BITCODE_H first = NULL;
+      BITCODE_H last = NULL;
+      BITCODE_H ref;
+      BITCODE_H *new_owned;
+      bool have_first = false;
+      bool have_last = false;
       unsigned i = 0;
       owned = (BITCODE_H *)calloc (1, sizeof (BITCODE_H));
-      dwg_dynapi_entity_value (ow, owner->name, firstfield, &first, 0);
-      dwg_dynapi_entity_value (ow, owner->name, lastfield, &last, 0);
+      if (!owned)
+        return;
+      if (!dwg_dynapi_entity_value (ow, owner->name, firstfield, &first, 0))
+        first = NULL;
+      if (!dwg_dynapi_entity_value (ow, owner->name, lastfield, &last, 0))
+        last = NULL;
+      if (dwg->object_ref)
+        for (BITCODE_BL r = 0; r < dwg->num_object_refs; r++)
+          {
+            if (first && dwg->object_ref[r] == first)
+              have_first = true;
+            if (last && dwg->object_ref[r] == last)
+              have_last = true;
+          }
+      if (first && !have_first)
+        first = NULL;
+      if (last && !have_last)
+        last = NULL;
       ref = first;
       if (!first || !last || !last->absolute_ref)
         {
@@ -8040,8 +8061,13 @@ in_postprocess_SEQEND (Dwg_Object *restrict obj, BITCODE_BL num_owned,
                   || !ref_obj->tio.entity)
                 break;
               if (i > 0)
-                owned = (BITCODE_H *)realloc (owned,
-                                              (i + 1) * sizeof (BITCODE_H));
+                {
+                  new_owned = (BITCODE_H *)realloc (
+                      owned, (i + 1) * sizeof (BITCODE_H));
+                  if (!new_owned)
+                    break;
+                  owned = new_owned;
+                }
               owned[i] = ref;
               if (ref)
                 LOG_TRACE ("%s.%s[%u] = " FORMAT_REF "[H 0]\n", owner->name,
