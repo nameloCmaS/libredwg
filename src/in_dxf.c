@@ -636,6 +636,20 @@ free_VALUEPARAMs (Dwg_VALUEPARAM *restrict values, BITCODE_BL num_values)
   free (values);
 }
 
+static void
+free_ASSOCNETWORK_actions (Dwg_Object_ASSOCNETWORK *restrict assocnetwork)
+{
+  if (!assocnetwork)
+    return;
+
+  free (assocnetwork->actions);
+  assocnetwork->actions = NULL;
+  assocnetwork->num_actions = 0;
+  free (assocnetwork->owned_actions);
+  assocnetwork->owned_actions = NULL;
+  assocnetwork->num_owned_actions = 0;
+}
+
 /* With mips32 -O2 inline would fail. */
 static void
 dxf_skip_ws (Bit_Chain *dat)
@@ -6703,6 +6717,7 @@ add_ASSOCNETWORK (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
 
   if (pair == NULL || pair->code != 90)
     return pair;
+  free_ASSOCNETWORK_actions (o);
   EXPECT_INT_DXF ("network_version", 90, BS);
   FIELD_BL (network_action_index, 90);
   FIELD_BL (num_actions, 90);
@@ -6725,6 +6740,7 @@ add_ASSOCNETWORK (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
         {
           LOG_ERROR ("Invalid ASSOCACTION.deps[%d].is_owned DXF code %d", i,
                      pair ? pair->code : 0);
+          free (deps);
           return NULL;
         }
       code = deps[i].is_owned ? DWG_HDL_HARDOWN : DWG_HDL_SOFTPTR;
@@ -6752,6 +6768,7 @@ add_ASSOCNETWORK (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
         {
           LOG_ERROR ("Invalid ASSOCNETWORK.owned_actions[%d] DXF code %d", i,
                      pair ? pair->code : 0);
+          free (hv);
           return NULL;
         }
       hdl = dwg_add_handleref (dwg, 3, pair->value.u, obj);
@@ -6761,7 +6778,9 @@ add_ASSOCNETWORK (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
       dxf_free_pair (pair);
     }
   if (num)
-    dwg_dynapi_entity_set_value (o, obj->name, "owned_actions", &hv, 1);
+    {
+      dwg_dynapi_entity_set_value (o, obj->name, "owned_actions", &hv, 1);
+    }
   return NULL;
 }
 
