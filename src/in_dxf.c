@@ -650,6 +650,23 @@ free_ASSOCNETWORK_actions (Dwg_Object_ASSOCNETWORK *restrict assocnetwork)
   assocnetwork->num_owned_actions = 0;
 }
 
+static void
+free_ASSOCACTION_data (Dwg_Object_ASSOCACTION *restrict assocaction)
+{
+  if (!assocaction)
+    return;
+
+  free (assocaction->deps);
+  assocaction->deps = NULL;
+  assocaction->num_deps = 0;
+  free (assocaction->owned_params);
+  assocaction->owned_params = NULL;
+  assocaction->num_owned_params = 0;
+  free_VALUEPARAMs (assocaction->values, assocaction->num_values);
+  assocaction->values = NULL;
+  assocaction->num_values = 0;
+}
+
 /* With mips32 -O2 inline would fail. */
 static void
 dxf_skip_ws (Bit_Chain *dat)
@@ -6799,6 +6816,7 @@ add_ASSOCACTION (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
 
   if (pair == NULL || pair->code != 90)
     return pair;
+  free_ASSOCACTION_data (o);
   class_version = pair->value.u;
   EXPECT_INT_DXF ("class_version", 90, BS);
   FIELD_BL (geometry_status, 90);
@@ -6826,6 +6844,7 @@ add_ASSOCACTION (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
         {
           LOG_ERROR ("Invalid ASSOCACTION.deps[%d].is_owned DXF code %d", i,
                      pair ? pair->code : 0);
+          free (deps);
           return NULL;
         }
       code = deps[i].is_owned ? DWG_HDL_HARDOWN : DWG_HDL_SOFTPTR;
@@ -6855,6 +6874,7 @@ add_ASSOCACTION (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
             {
               LOG_ERROR ("Invalid ASSOCACTION.owned_params[%d] DXF code %d", i,
                          pair ? pair->code : 0);
+              free (hv);
               return NULL;
             }
           hdl = dwg_add_handleref (dwg, 3, pair->value.u, obj);
@@ -6864,7 +6884,9 @@ add_ASSOCACTION (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
           dxf_free_pair (pair);
         }
       if (num)
-        dwg_dynapi_entity_set_value (o, obj->name, "owned_params", &hv, 1);
+        {
+          dwg_dynapi_entity_set_value (o, obj->name, "owned_params", &hv, 1);
+        }
 
       pair = dxf_read_pair (dat);
       if (pair == NULL || pair->code != 90)
@@ -6884,10 +6906,15 @@ add_ASSOCACTION (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
       for (unsigned i = 0; i < num; i++)
         {
           if (!add_VALUEPARAMs (dwg, dat, &values[i]))
-            return NULL;
+            {
+              free_VALUEPARAMs (values, num);
+              return NULL;
+            }
         }
       if (num)
-        dwg_dynapi_entity_set_value (o, obj->name, "values", &values, 1);
+        {
+          dwg_dynapi_entity_set_value (o, obj->name, "values", &values, 1);
+        }
     }
 
   return NULL;
