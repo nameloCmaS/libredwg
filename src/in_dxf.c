@@ -380,6 +380,35 @@ xcalloc (size_t n, size_t s)
 
 #ifndef DISABLE_DXF
 
+static void
+free_DIMASSOC_refs (Dwg_Object_DIMASSOC *restrict dimassoc)
+{
+  int i;
+
+  if (!dimassoc || !dimassoc->ref)
+    return;
+
+  for (i = 0; i < 4; i++)
+    {
+      free (dimassoc->ref[i].classname);
+      dimassoc->ref[i].classname = NULL;
+      free (dimassoc->ref[i].xrefs);
+      dimassoc->ref[i].xrefs = NULL;
+      dimassoc->ref[i].num_xrefs = 0;
+      free (dimassoc->ref[i].xrefpaths);
+      dimassoc->ref[i].xrefpaths = NULL;
+      dimassoc->ref[i].num_xrefpaths = 0;
+      free (dimassoc->ref[i].intersec_xrefpaths);
+      dimassoc->ref[i].intersec_xrefpaths = NULL;
+      dimassoc->ref[i].num_intersec_xrefpaths = 0;
+      free (dimassoc->ref[i].intsectobj);
+      dimassoc->ref[i].intsectobj = NULL;
+      dimassoc->ref[i].num_intsectobj = 0;
+    }
+  free (dimassoc->ref);
+  dimassoc->ref = NULL;
+}
+
 /* With mips32 -O2 inline would fail. */
 static void
 dxf_skip_ws (Bit_Chain *dat)
@@ -5857,6 +5886,7 @@ add_DIMASSOC (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
   Dwg_Data *dwg = obj->parent;
   int i = -1, j = -1;
   int have_rotated_type = 0;
+  free_DIMASSOC_refs (o);
   o->ref = (Dwg_DIMASSOC_Ref *)xcalloc (4, sizeof (Dwg_DIMASSOC_Ref));
   if (!o->ref)
     {
@@ -5903,6 +5933,8 @@ add_DIMASSOC (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
                 i = 3;
               assert (i >= 0 && i <= 3);
             }
+          free (o->ref[i].classname);
+          o->ref[i].classname = NULL;
           o->ref[i].classname = dwg_add_u8_input (dwg, pair->value.s.ptr);
           LOG_TRACE ("%s.ref[%d].classname = %s [T %d]\n", obj->name, i,
                      pair->value.s.ptr, pair->code);
@@ -5919,11 +5951,15 @@ add_DIMASSOC (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
         case 331:
           {
             BITCODE_BS n;
+            BITCODE_H *xrefs;
             if (i < 0 || i > 3)
               break;
             n = o->ref[i].num_xrefs;
-            o->ref[i].xrefs = (BITCODE_H *)realloc (
-                o->ref[i].xrefs, (n + 1) * sizeof (BITCODE_H));
+            xrefs = (BITCODE_H *)realloc (o->ref[i].xrefs,
+                                          (n + 1) * sizeof (BITCODE_H));
+            if (!xrefs)
+              return NULL;
+            o->ref[i].xrefs = xrefs;
             o->ref[i].xrefs[n]
                 = dwg_add_handleref (dwg, 5, pair->value.u, obj);
             LOG_TRACE ("%s.ref[%d].xrefs[%d] = " FORMAT_REF " [H* %d]\n",
@@ -5935,6 +5971,8 @@ add_DIMASSOC (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
         case 74:
           if (i < 0 || i > 3)
             break;
+          free (o->ref[i].intsectobj);
+          o->ref[i].intsectobj = NULL;
           o->ref[i].num_intsectobj = pair->value.i;
           o->ref[i].intsectobj
               = (BITCODE_H *)xcalloc (pair->value.i, sizeof (BITCODE_H));
