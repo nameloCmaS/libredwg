@@ -380,6 +380,67 @@ xcalloc (size_t n, size_t s)
 
 #ifndef DISABLE_DXF
 
+static void
+free_EVALVARIANT_data (Dwg_EvalVariant *restrict value)
+{
+  if (!value)
+    return;
+
+  if (dwg_resbuf_value_type (value->code) == DWG_VT_STRING)
+    free (value->u.text);
+  memset (value, 0, sizeof (Dwg_EvalVariant));
+}
+
+static void
+free_VALUEPARAM_data (Dwg_VALUEPARAM *restrict value)
+{
+  BITCODE_BL i;
+
+  if (!value)
+    return;
+
+  free (value->name);
+  value->name = NULL;
+  if (value->vars)
+    {
+      for (i = 0; i < value->num_vars; i++)
+        free_EVALVARIANT_data (&value->vars[i].value);
+      free (value->vars);
+      value->vars = NULL;
+    }
+  value->num_vars = 0;
+}
+
+static void
+free_VALUEPARAMs (Dwg_VALUEPARAM *restrict values, BITCODE_BL num_values)
+{
+  BITCODE_BL i;
+
+  if (!values)
+    return;
+
+  for (i = 0; i < num_values; i++)
+    free_VALUEPARAM_data (&values[i]);
+  free (values);
+}
+
+static void
+free_ASSOCACTION_data (Dwg_Object_ASSOCACTION *restrict assocaction)
+{
+  if (!assocaction)
+    return;
+
+  free (assocaction->deps);
+  assocaction->deps = NULL;
+  assocaction->num_deps = 0;
+  free (assocaction->owned_params);
+  assocaction->owned_params = NULL;
+  assocaction->num_owned_params = 0;
+  free_VALUEPARAMs (assocaction->values, assocaction->num_values);
+  assocaction->values = NULL;
+  assocaction->num_values = 0;
+}
+
 /* With mips32 -O2 inline would fail. */
 static void
 dxf_skip_ws (Bit_Chain *dat)
@@ -6476,6 +6537,7 @@ add_ASSOCACTION (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
 
   if (pair == NULL || pair->code != 90)
     return pair;
+  free_ASSOCACTION_data (o);
   class_version = pair->value.u;
   EXPECT_INT_DXF ("class_version", 90, BS);
   FIELD_BL (geometry_status, 90);
@@ -6503,6 +6565,7 @@ add_ASSOCACTION (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
         {
           LOG_ERROR ("Invalid ASSOCACTION.deps[%d].is_owned DXF code %d", i,
                      pair ? pair->code : 0);
+          free (deps);
           return NULL;
         }
       code = deps[i].is_owned ? DWG_HDL_HARDOWN : DWG_HDL_SOFTPTR;
@@ -6532,6 +6595,7 @@ add_ASSOCACTION (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
             {
               LOG_ERROR ("Invalid ASSOCACTION.owned_params[%d] DXF code %d", i,
                          pair ? pair->code : 0);
+              free (hv);
               return NULL;
             }
           hdl = dwg_add_handleref (dwg, 3, pair->value.u, obj);
@@ -6541,7 +6605,9 @@ add_ASSOCACTION (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
           dxf_free_pair (pair);
         }
       if (num)
-        dwg_dynapi_entity_set_value (o, obj->name, "owned_params", &hv, 1);
+        {
+          dwg_dynapi_entity_set_value (o, obj->name, "owned_params", &hv, 1);
+        }
 
       pair = dxf_read_pair (dat);
       if (pair == NULL || pair->code != 90)
@@ -6561,10 +6627,15 @@ add_ASSOCACTION (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
       for (unsigned i = 0; i < num; i++)
         {
           if (!add_VALUEPARAMs (dwg, dat, &values[i]))
-            return NULL;
+            {
+              free_VALUEPARAMs (values, num);
+              return NULL;
+            }
         }
       if (num)
-        dwg_dynapi_entity_set_value (o, obj->name, "values", &values, 1);
+        {
+          dwg_dynapi_entity_set_value (o, obj->name, "values", &values, 1);
+        }
     }
 
   return NULL;
