@@ -574,6 +574,24 @@ free_DIMASSOC_refs (Dwg_Object_DIMASSOC *restrict dimassoc)
   dimassoc->ref = NULL;
 }
 
+static void
+free_LAYER_entries (Dwg_Object_LAYER_INDEX *restrict layer_index)
+{
+  int i;
+
+  if (!layer_index || !layer_index->entries)
+    return;
+
+  for (i = 0; i < (int)layer_index->num_entries; i++)
+    {
+      free (layer_index->entries[i].name);
+      layer_index->entries[i].name = NULL;
+    }
+  free (layer_index->entries);
+  layer_index->entries = NULL;
+  layer_index->num_entries = 0;
+}
+
 /* With mips32 -O2 inline would fail. */
 static void
 dxf_skip_ws (Bit_Chain *dat)
@@ -6257,6 +6275,7 @@ add_LAYER_entry (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
   Dwg_Object_LAYER_INDEX *o = obj->tio.object->tio.LAYER_INDEX;
   Dwg_Data *dwg = obj->parent;
   int i = 0;
+  free_LAYER_entries (o);
   o->entries = (Dwg_LAYER_entry *)xcalloc (1, sizeof (Dwg_LAYER_entry));
   o->num_entries = 1;
   if (!o->entries)
@@ -6278,6 +6297,8 @@ add_LAYER_entry (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
         case 0:
           break;
         case 8:
+          free (o->entries[i].name);
+          o->entries[i].name = NULL;
           o->entries[i].name = dwg_add_u8_input (dwg, pair->value.s.ptr);
           LOG_TRACE ("%s.entries[%d].name = %s [T %d]\n", obj->name, i,
                      pair->value.s.ptr, pair->code);
@@ -6290,27 +6311,27 @@ add_LAYER_entry (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
                      pair->code);
           break;
         case 90:
-          o->entries[i].numlayers = pair->value.i;
-          LOG_TRACE ("%s.entries[%d].numlayers = %d [BL %d]\n", obj->name, i,
-                     pair->value.i, pair->code);
-          o->num_entries++;
-          i++;
-          o->entries = (Dwg_LAYER_entry *)realloc (
-              o->entries, o->num_entries * sizeof (Dwg_LAYER_entry));
-          if (!o->entries)
-            {
-              o->num_entries = 0;
-              return NULL;
-            }
-          else
-            {
-              memset (&o->entries[o->num_entries - 1], 0,
-                      sizeof (Dwg_LAYER_entry));
-            }
+          {
+            Dwg_LAYER_entry *entries;
+            BITCODE_BL num_entries = o->num_entries + 1;
+            o->entries[i].numlayers = pair->value.i;
+            LOG_TRACE ("%s.entries[%d].numlayers = %d [BL %d]\n", obj->name, i,
+                       pair->value.i, pair->code);
+            entries = (Dwg_LAYER_entry *)realloc (
+                o->entries, num_entries * sizeof (Dwg_LAYER_entry));
+            if (!entries)
+              {
+                return NULL;
+              }
+            o->entries = entries;
+            o->num_entries = num_entries;
+            i++;
+            memset (&o->entries[o->num_entries - 1], 0,
+                    sizeof (Dwg_LAYER_entry));
+          }
           break;
         default:
-          o->entries = NULL;
-          o->num_entries = 0;
+          free_LAYER_entries (o);
           LOG_ERROR ("Unknown DXF code %d for %s", pair->code, "LAYER_INDEX");
           return NULL;
         }
