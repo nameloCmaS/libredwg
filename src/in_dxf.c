@@ -10055,6 +10055,7 @@ static __nonnull ((1, 2, 3, 4)) Dxf_Pair *new_object (
           else
           // clang-format on
           {
+            free (dxfname);
             dwg->num_objects--;
             LOG_ERROR ("Unknown DXF AcDbSymbolTableRecord %s, skipping", name);
             return pair;
@@ -10064,6 +10065,13 @@ static __nonnull ((1, 2, 3, 4)) Dxf_Pair *new_object (
 
   if (!_obj)
     {
+      if (obj->dxfname == dxfname)
+        {
+          free (obj->dxfname);
+          obj->dxfname = NULL;
+          dxfname = NULL;
+        }
+      free (dxfname);
       dwg->num_objects--;
       LOG_ERROR ("Empty _obj at DXF AcDbSymbolTableRecord %s, skipping", name);
       return pair;
@@ -10387,6 +10395,8 @@ static __nonnull ((1, 2, 3, 4)) Dxf_Pair *new_object (
                     {
                       obj->type = obj->fixedtype = DWG_TYPE_DIMENSION_LINEAR;
                       obj->name = (char *)"DIMENSION_LINEAR";
+                      free (obj->dxfname);
+                      dxfname = NULL;
                       obj->dxfname = strdup (obj->name);
                       strcpy (name, obj->name);
                       LOG_TRACE ("change type to %s\n", name);
@@ -10397,6 +10407,8 @@ static __nonnull ((1, 2, 3, 4)) Dxf_Pair *new_object (
                       // new pairs
                       obj->type = obj->fixedtype = DWG_TYPE_DIMENSION_ALIGNED;
                       obj->name = (char *)"DIMENSION_ALIGNED";
+                      free (obj->dxfname);
+                      dxfname = NULL;
                       obj->dxfname = strdup (obj->name);
                       strcpy (name, obj->name);
                       LOG_TRACE ("change type to %s\n", name);
@@ -10405,6 +10417,8 @@ static __nonnull ((1, 2, 3, 4)) Dxf_Pair *new_object (
                     {
                       obj->type = obj->fixedtype = DWG_TYPE_DIMENSION_ORDINATE;
                       obj->name = (char *)"DIMENSION_ORDINATE";
+                      free (obj->dxfname);
+                      dxfname = NULL;
                       obj->dxfname = strdup (obj->name);
                       strcpy (name, obj->name);
                       LOG_TRACE ("change type to %s\n", name);
@@ -10413,6 +10427,8 @@ static __nonnull ((1, 2, 3, 4)) Dxf_Pair *new_object (
                     {
                       obj->type = obj->fixedtype = DWG_TYPE_DIMENSION_DIAMETER;
                       obj->name = (char *)"DIMENSION_DIAMETER";
+                      free (obj->dxfname);
+                      dxfname = NULL;
                       obj->dxfname = strdup (obj->name);
                       strcpy (name, obj->name);
                       LOG_TRACE ("change type to %s\n", name);
@@ -13598,7 +13614,8 @@ invalid_dxf:
 fail:
   if (obj)
     {
-      obj->dxfname = NULL; // prevent double-free by caller
+      free (obj->dxfname);
+      obj->dxfname = NULL;
       dwg_free_object (obj);
       dwg->num_objects--;
     }
@@ -13663,11 +13680,11 @@ dxf_tables_read (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
               // until 0 table or 0 ENDTAB
               pair = new_object (table, dxfname, dat, dwg, ctrl_id,
                                  (BITCODE_BL *)&i);
+              dxfname = NULL;
               obj = &dwg->object[idx];
               ctrl = &dwg->object[ctrl_id];
               if (!pair)
                 {
-                  free (dxfname);
                   if (idx != dwg->num_objects)
                     obj->dxfname = NULL;
                   return DWG_ERR_INVALIDDWG;
@@ -13778,19 +13795,13 @@ dxf_tables_read (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
                       {
                         _obj->strings_area = (BITCODE_TF)xcalloc (512, 1);
                         if (!_obj->strings_area)
-                          {
-                            free (dxfname);
-                            goto outofmem;
-                          }
+                          goto outofmem;
                       }
                     if (dwg->header.from_version <= R_2004)
                       {
                         _obj->strings_area = (BITCODE_TF)xcalloc (256, 1);
                         if (!_obj->strings_area)
-                          {
-                            free (dxfname);
-                            goto outofmem;
-                          }
+                          goto outofmem;
                       }
                   }
                 else if (dat->version <= R_12 && strEQc (table, "VPORT") && obj
