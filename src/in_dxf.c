@@ -10660,6 +10660,40 @@ add_MATERIAL (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
 #  undef MAT_BL
 }
 
+static void
+discard_new_object (Dwg_Data *restrict dwg, Dwg_Object *restrict obj,
+                    char **dxfname)
+{
+  if (obj)
+    {
+      if (obj->dxfname)
+        {
+          if (dxfname && obj->dxfname == *dxfname)
+            *dxfname = NULL;
+          free (obj->dxfname);
+          obj->dxfname = NULL;
+        }
+      if (obj->supertype == DWG_SUPERTYPE_ENTITY)
+        {
+          free (obj->tio.entity);
+          obj->tio.entity = NULL;
+        }
+      else
+        {
+          free (obj->tio.object);
+          obj->tio.object = NULL;
+        }
+      memset (obj, 0, sizeof (*obj));
+    }
+  if (dxfname && *dxfname)
+    {
+      free (*dxfname);
+      *dxfname = NULL;
+    }
+  if (obj && dwg->num_objects)
+    dwg->num_objects--;
+}
+
 /* For tables, entities and objects.
  */
 static __nonnull ((1, 2, 3, 4)) Dxf_Pair *new_object (
@@ -10830,8 +10864,7 @@ static __nonnull ((1, 2, 3, 4)) Dxf_Pair *new_object (
           else
           // clang-format on
           {
-            free (dxfname);
-            dwg->num_objects--;
+            discard_new_object (dwg, obj, &dxfname);
             LOG_ERROR ("Unknown DXF AcDbSymbolTableRecord %s, skipping", name);
             return pair;
           }
@@ -10840,14 +10873,7 @@ static __nonnull ((1, 2, 3, 4)) Dxf_Pair *new_object (
 
   if (!_obj)
     {
-      if (obj->dxfname == dxfname)
-        {
-          free (obj->dxfname);
-          obj->dxfname = NULL;
-          dxfname = NULL;
-        }
-      free (dxfname);
-      dwg->num_objects--;
+      discard_new_object (dwg, obj, &dxfname);
       LOG_ERROR ("Empty _obj at DXF AcDbSymbolTableRecord %s, skipping", name);
       return pair;
     }
@@ -11022,9 +11048,9 @@ static __nonnull ((1, 2, 3, 4)) Dxf_Pair *new_object (
                        != dwg->object[0].tio.object->tio.BLOCK_HEADER
                 && dwg->num_objects)
               {
-                dwg->num_objects--;
                 free (obj->tio.object->tio.BLOCK_HEADER);
                 obj->tio.object->tio.BLOCK_HEADER = NULL;
+                discard_new_object (dwg, obj, &dxfname);
                 obj = &dwg->object[0];
                 _obj = obj->tio.object->tio.APPID;
                 LOG_TRACE ("Reuse existing BLOCK_HEADER.*Model_Space %X [0]\n",
@@ -14878,8 +14904,7 @@ dxf_blocks_read (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
                                       = bctrl->tio.object->tio.BLOCK_CONTROL;
                                   if (_bctrl->num_entries > 0)
                                     _bctrl->entries[_bctrl->num_entries - 1]
-                                        ->r11_idx
-                                        = new_r11_idx;
+                                        ->r11_idx = new_r11_idx;
                                 }
                               LOG_TRACE ("r11: created BLOCK_HEADER %s "
                                          "[r11_idx %d]\n",
