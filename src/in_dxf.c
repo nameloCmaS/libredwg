@@ -1888,6 +1888,16 @@ dxf_read_CMC (const Dwg_Data *restrict dwg, Bit_Chain *restrict dat,
   return error;
 }
 
+static BITCODE_T16
+dxf_summary_strdup (Bit_Chain *restrict dat, const char *restrict value)
+{
+  char dest[1024];
+  bit_utf8_to_TV (dest, (unsigned char *)value, sizeof (dest), strlen (value),
+                  0, dat->codepage);
+  dest[sizeof (dest) - 1] = '\0';
+  return (BITCODE_T16)strdup (dest);
+}
+
 static int
 dxf_header_read (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
 {
@@ -1976,12 +1986,17 @@ dxf_header_read (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
 #  define SUMMARY_T(name)                                                     \
     (pair->code == 1 && strEQc (field, "$" #name) && pair->value.s.ptr != NULL)   \
     {                                                                         \
-      char dest[1024];                                                        \
+      BITCODE_T16 text;                                                       \
       LOG_TRACE ("SUMMARY.%s = %s [T16 1]\n", &field[1], pair->value.s.ptr);      \
-      bit_utf8_to_TV (dest, (unsigned char *)pair->value.s.ptr, 1024,             \
-                      strlen (pair->value.s.ptr), 0, dat->codepage);              \
-      dest[1023] = '\0';                                                      \
-      dwg->summaryinfo.name = strdup (dest);                                  \
+      text = dxf_summary_strdup (dat, pair->value.s.ptr);                     \
+      if (!text)                                                              \
+        {                                                                     \
+          LOG_ERROR ("Out of memory");                                        \
+          dxf_free_pair (pair);                                               \
+          return DWG_ERR_OUTOFMEM;                                            \
+        }                                                                     \
+      free (dwg->summaryinfo.name);                                           \
+      dwg->summaryinfo.name = text;                                           \
     }
 
               // clang-format off
@@ -1996,36 +2011,49 @@ dxf_header_read (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
                        && pair->value.s.ptr != NULL)
                 // clang-format on
                 {
-                  char dest[1024];
                   BITCODE_BL j = dwg->summaryinfo.num_props;
-                  dwg->summaryinfo.num_props++;
-                  dwg->summaryinfo.props
+                  Dwg_SummaryInfo_Property *props
                       = (Dwg_SummaryInfo_Property *)realloc (
                           dwg->summaryinfo.props,
                           (j + 1) * sizeof (Dwg_SummaryInfo_Property));
+                  if (!props)
+                    {
+                      LOG_ERROR ("Out of memory");
+                      dxf_free_pair (pair);
+                      return DWG_ERR_OUTOFMEM;
+                    }
+                  dwg->summaryinfo.props = props;
+                  dwg->summaryinfo.num_props = j + 1;
                   memset (dwg->summaryinfo.props + j, 0,
                           sizeof (Dwg_SummaryInfo_Property));
                   LOG_TRACE ("SUMMARY.props[%u].tag = %s [TU16 1]\n", j,
                              pair->value.s.ptr);
-                  bit_utf8_to_TV (dest, (unsigned char *)pair->value.s.ptr,
-                                  1024, strlen (pair->value.s.ptr), 0,
-                                  dat->codepage);
-                  dest[1023] = '\0';
-                  dwg->summaryinfo.props[j].tag = strdup (dest);
+                  dwg->summaryinfo.props[j].tag
+                      = dxf_summary_strdup (dat, pair->value.s.ptr);
+                  if (!dwg->summaryinfo.props[j].tag)
+                    {
+                      LOG_ERROR ("Out of memory");
+                      dxf_free_pair (pair);
+                      return DWG_ERR_OUTOFMEM;
+                    }
                 }
               else if (pair->code == 1 && strEQc (field, "$CUSTOMPROPERTY")
                        && pair->value.s.ptr != NULL && dwg->summaryinfo.props
                        && dwg->summaryinfo.num_props > 0)
                 {
-                  char dest[1024];
                   BITCODE_BL j = dwg->summaryinfo.num_props - 1;
+                  BITCODE_T16 value;
                   LOG_TRACE ("SUMMARY.props[%u].value = %s [TU16 1]\n", j,
                              pair->value.s.ptr);
-                  bit_utf8_to_TV (dest, (unsigned char *)pair->value.s.ptr,
-                                  1024, strlen (pair->value.s.ptr), 0,
-                                  dat->codepage);
-                  dest[1023] = '\0';
-                  dwg->summaryinfo.props[j].value = strdup (dest);
+                  value = dxf_summary_strdup (dat, pair->value.s.ptr);
+                  if (!value)
+                    {
+                      LOG_ERROR ("Out of memory");
+                      dxf_free_pair (pair);
+                      return DWG_ERR_OUTOFMEM;
+                    }
+                  free (dwg->summaryinfo.props[j].value);
+                  dwg->summaryinfo.props[j].value = value;
                 }
               else
                 LOG_ERROR ("skipping HEADER: 9 %s, unknown field with code %d",
@@ -13101,26 +13129,41 @@ static __nonnull ((1, 2, 3, 4)) Dxf_Pair *new_object (
                           && strEQc (f->name, "num_clip_verts"))
                         {
                           BITCODE_2RD *clip_verts;
-                          BITCODE_BL num_clip_verts = pair->value.u;
+                          BITCODE_2RD *new_clip_verts;
+                          BITCODE_BL num_clip_verts
+                              = pair->code == 70 && pair->value.i < 0
+                                    ? 0
+                                    : pair->value.u;
                           if (pair->code == 91)
                             dwg_dynapi_entity_set_value (
                                 _obj, obj->name, f->name, &num_clip_verts, 0);
                           else
                             {
-                              BITCODE_BS num = pair->value.i; // 70
+                              BITCODE_BS num = pair->value.i < 0
+                                                   ? 0
+                                                   : pair->value.i; // 70
                               dwg_dynapi_entity_set_value (_obj, obj->name,
                                                            f->name, &num, 0);
                             }
                           dwg_dynapi_entity_value (_obj, obj->name,
                                                    "clip_verts", &clip_verts,
                                                    NULL);
-                          clip_verts = (BITCODE_2RD *)realloc (
-                              clip_verts,
-                              num_clip_verts * sizeof (BITCODE_2RD));
-                          if (!clip_verts)
-                            goto invalid_dxf;
+                          if (num_clip_verts)
+                            {
+                              new_clip_verts = (BITCODE_2RD *)realloc (
+                                  clip_verts,
+                                  num_clip_verts * sizeof (BITCODE_2RD));
+                              if (!new_clip_verts)
+                                goto invalid_dxf;
+                              clip_verts = new_clip_verts;
+                            }
+                          else
+                            {
+                              free (clip_verts);
+                              clip_verts = NULL;
+                            }
                           dwg_dynapi_entity_set_value (
-                              _obj, obj->name, f->name, &clip_verts, 0);
+                              _obj, obj->name, "clip_verts", &clip_verts, 0);
                           LOG_TRACE ("%s.num_clip_verts = %d [%s %d]\n", name,
                                      num_clip_verts, f->type, pair->code);
                         }
@@ -13159,7 +13202,7 @@ static __nonnull ((1, 2, 3, 4)) Dxf_Pair *new_object (
                                 }
 
                               // no need to realloc
-                              if (!j && pair->code == 14)
+                              if (!clip_verts && !j && pair->code == 14)
                                 {
                                   clip_verts = (BITCODE_2RD *)xcalloc (
                                       num_clip_verts, sizeof (BITCODE_2RD));
