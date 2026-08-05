@@ -1376,6 +1376,16 @@ dxf_read_CMC (const Dwg_Data *restrict dwg, Bit_Chain *restrict dat,
   return error;
 }
 
+static BITCODE_T16
+dxf_summary_strdup (Bit_Chain *restrict dat, const char *restrict value)
+{
+  char dest[1024];
+  bit_utf8_to_TV (dest, (unsigned char *)value, sizeof (dest), strlen (value),
+                  0, dat->codepage);
+  dest[sizeof (dest) - 1] = '\0';
+  return (BITCODE_T16)strdup (dest);
+}
+
 static int
 dxf_header_read (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
 {
@@ -1464,12 +1474,17 @@ dxf_header_read (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
 #  define SUMMARY_T(name)                                                     \
     (pair->code == 1 && strEQc (field, "$" #name) && pair->value.s.ptr != NULL)   \
     {                                                                         \
-      char dest[1024];                                                        \
+      BITCODE_T16 text;                                                       \
       LOG_TRACE ("SUMMARY.%s = %s [T16 1]\n", &field[1], pair->value.s.ptr);      \
-      bit_utf8_to_TV (dest, (unsigned char *)pair->value.s.ptr, 1024,             \
-                      strlen (pair->value.s.ptr), 0, dat->codepage);              \
-      dest[1023] = '\0';                                                      \
-      dwg->summaryinfo.name = strdup (dest);                                  \
+      text = dxf_summary_strdup (dat, pair->value.s.ptr);                     \
+      if (!text)                                                              \
+        {                                                                     \
+          LOG_ERROR ("Out of memory");                                        \
+          dxf_free_pair (pair);                                               \
+          return DWG_ERR_OUTOFMEM;                                            \
+        }                                                                     \
+      free (dwg->summaryinfo.name);                                           \
+      dwg->summaryinfo.name = text;                                           \
     }
 
               // clang-format off
@@ -1484,36 +1499,49 @@ dxf_header_read (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
                        && pair->value.s.ptr != NULL)
                 // clang-format on
                 {
-                  char dest[1024];
                   BITCODE_BL j = dwg->summaryinfo.num_props;
-                  dwg->summaryinfo.num_props++;
-                  dwg->summaryinfo.props
+                  Dwg_SummaryInfo_Property *props
                       = (Dwg_SummaryInfo_Property *)realloc (
                           dwg->summaryinfo.props,
                           (j + 1) * sizeof (Dwg_SummaryInfo_Property));
+                  if (!props)
+                    {
+                      LOG_ERROR ("Out of memory");
+                      dxf_free_pair (pair);
+                      return DWG_ERR_OUTOFMEM;
+                    }
+                  dwg->summaryinfo.props = props;
+                  dwg->summaryinfo.num_props = j + 1;
                   memset (dwg->summaryinfo.props + j, 0,
                           sizeof (Dwg_SummaryInfo_Property));
                   LOG_TRACE ("SUMMARY.props[%u].tag = %s [TU16 1]\n", j,
                              pair->value.s.ptr);
-                  bit_utf8_to_TV (dest, (unsigned char *)pair->value.s.ptr,
-                                  1024, strlen (pair->value.s.ptr), 0,
-                                  dat->codepage);
-                  dest[1023] = '\0';
-                  dwg->summaryinfo.props[j].tag = strdup (dest);
+                  dwg->summaryinfo.props[j].tag
+                      = dxf_summary_strdup (dat, pair->value.s.ptr);
+                  if (!dwg->summaryinfo.props[j].tag)
+                    {
+                      LOG_ERROR ("Out of memory");
+                      dxf_free_pair (pair);
+                      return DWG_ERR_OUTOFMEM;
+                    }
                 }
               else if (pair->code == 1 && strEQc (field, "$CUSTOMPROPERTY")
                        && pair->value.s.ptr != NULL && dwg->summaryinfo.props
                        && dwg->summaryinfo.num_props > 0)
                 {
-                  char dest[1024];
                   BITCODE_BL j = dwg->summaryinfo.num_props - 1;
+                  BITCODE_T16 value;
                   LOG_TRACE ("SUMMARY.props[%u].value = %s [TU16 1]\n", j,
                              pair->value.s.ptr);
-                  bit_utf8_to_TV (dest, (unsigned char *)pair->value.s.ptr,
-                                  1024, strlen (pair->value.s.ptr), 0,
-                                  dat->codepage);
-                  dest[1023] = '\0';
-                  dwg->summaryinfo.props[j].value = strdup (dest);
+                  value = dxf_summary_strdup (dat, pair->value.s.ptr);
+                  if (!value)
+                    {
+                      LOG_ERROR ("Out of memory");
+                      dxf_free_pair (pair);
+                      return DWG_ERR_OUTOFMEM;
+                    }
+                  free (dwg->summaryinfo.props[j].value);
+                  dwg->summaryinfo.props[j].value = value;
                 }
               else
                 LOG_ERROR ("skipping HEADER: 9 %s, unknown field with code %d",
@@ -7247,7 +7275,6 @@ new_table_control (const char *restrict name, Bit_Chain *restrict dat,
   Dxf_Pair *pair = NULL;
   Dwg_Object_LTYPE_CONTROL *_obj = NULL; // the largest
   int j = 0;
-  int is_tu = dwg->header.version >= R_2007 ? 1 : 0;
   char *fieldname;
   char ctrlname[80];
   char *dxfname;
@@ -7409,59 +7436,56 @@ new_table_control (const char *restrict name, Bit_Chain *restrict dat,
                      ARGS_REF (obj->tio.object->xdicobjhandle));
           break;
         case 70:
-          if (pair->value.u)
-            {
-              BITCODE_H *hdls;
-              // can be -1
-              BITCODE_BL num_entries = pair->value.i < 0 ? 0 : pair->value.i;
-              BITCODE_BL zero_entries = 0;
-              if (num_entries > INT32_MAX // BS overflow
-                  && obj->fixedtype != DWG_TYPE_BLOCK_CONTROL
-                  && obj->fixedtype != DWG_TYPE_LAYER_CONTROL
-                  && obj->fixedtype != DWG_TYPE_VIEW_CONTROL
-                  && obj->fixedtype != DWG_TYPE_STYLE_CONTROL)
-                {
-                  LOG_ERROR ("%s.num_entries BS overflow", obj->name);
-                  num_entries = 0;
-                }
-              // Pre-allocate for capacity but start at 0: entries are added
-              // via PUSH_HV so they land at index 0, 1, ... not after NULLs
-              hdls = num_entries ? (BITCODE_H *)xcalloc (num_entries,
-                                                         sizeof (BITCODE_H))
-                                 : NULL;
-              dwg_dynapi_entity_set_value (_obj, obj->name, "num_entries",
-                                           &zero_entries, 1);
-              LOG_TRACE ("%s.num_entries = %u [BL 70]\n", ctrlname,
-                         num_entries);
-              dwg_dynapi_entity_set_value (_obj, obj->name, "entries", &hdls,
-                                           0);
-              LOG_TRACE ("Add %d %s.%s\n", num_entries, ctrlname, "entries");
-            }
+          {
+            // can be -1
+            BITCODE_BL num_entries = pair->value.i < 0 ? 0 : pair->value.i;
+            if (num_entries > INT32_MAX // BS overflow
+                && obj->fixedtype != DWG_TYPE_BLOCK_CONTROL
+                && obj->fixedtype != DWG_TYPE_LAYER_CONTROL
+                && obj->fixedtype != DWG_TYPE_VIEW_CONTROL
+                && obj->fixedtype != DWG_TYPE_STYLE_CONTROL)
+              {
+                LOG_ERROR ("%s.num_entries BS overflow", obj->name);
+                num_entries = 0;
+              }
+            free (_obj->entries);
+            _obj->entries = NULL;
+            // Entries are appended with PUSH_HV; no capacity is tracked here.
+            _obj->num_entries = 0;
+            LOG_TRACE ("%s.num_entries = %u [BL 70]\n", ctrlname, num_entries);
+          }
           break;
         case 71:
           if (strEQc (ctrlname, "DIMSTYLE_CONTROL"))
             {
-              if (pair->value.u)
+              Dwg_Object_DIMSTYLE_CONTROL *o
+                  = (Dwg_Object_DIMSTYLE_CONTROL *)_obj;
+              BITCODE_RC num_morehandles = 0;
+              free (o->morehandles);
+              o->morehandles = NULL;
+              o->num_morehandles = 0;
+              j = 0;
+              if (pair->value.u > UINT8_MAX)
                 {
-                  BITCODE_H *hdls;
-                  hdls = (BITCODE_H *)xcalloc (pair->value.u,
-                                               sizeof (BITCODE_H));
-                  if (!hdls)
-                    pair->value.u = 0;
-                  dwg_dynapi_entity_set_value (
-                      _obj, obj->name, "num_morehandles", &pair->value, is_tu);
-                  LOG_TRACE ("%s.num_morehandles = %u [BL 71]\n", ctrlname,
-                             pair->value.u);
-                  dwg_dynapi_entity_set_value (_obj, obj->name, "morehandles",
-                                               &hdls, 0);
-                  LOG_TRACE ("Add %s.morehandles[%d]\n", ctrlname,
-                             pair->value.u);
+                  LOG_ERROR ("%s.num_morehandles RC overflow", obj->name);
                 }
               else
                 {
-                  LOG_TRACE ("%s.num_morehandles = %u [BL 71]\n", ctrlname,
-                             pair->value.u);
+                  num_morehandles = (BITCODE_RC)pair->value.u;
+                  if (num_morehandles)
+                    {
+                      o->morehandles = (BITCODE_H *)xcalloc (
+                          num_morehandles, sizeof (BITCODE_H));
+                      if (!o->morehandles)
+                        {
+                          LOG_ERROR ("Out of memory");
+                          num_morehandles = 0;
+                        }
+                    }
                 }
+              o->num_morehandles = num_morehandles;
+              LOG_TRACE ("%s.num_morehandles = %u [BL 71]\n", ctrlname,
+                         o->num_morehandles);
               break;
             }
           // fall through
@@ -10434,6 +10458,7 @@ static __nonnull ((1, 2, 3, 4)) Dxf_Pair *new_object (
                     {
                       obj->type = obj->fixedtype = DWG_TYPE_DIMENSION_LINEAR;
                       obj->name = (char *)"DIMENSION_LINEAR";
+                      free (obj->dxfname);
                       obj->dxfname = strdup (obj->name);
                       strcpy (name, obj->name);
                       LOG_TRACE ("change type to %s\n", name);
@@ -10444,6 +10469,7 @@ static __nonnull ((1, 2, 3, 4)) Dxf_Pair *new_object (
                       // new pairs
                       obj->type = obj->fixedtype = DWG_TYPE_DIMENSION_ALIGNED;
                       obj->name = (char *)"DIMENSION_ALIGNED";
+                      free (obj->dxfname);
                       obj->dxfname = strdup (obj->name);
                       strcpy (name, obj->name);
                       LOG_TRACE ("change type to %s\n", name);
@@ -10452,6 +10478,7 @@ static __nonnull ((1, 2, 3, 4)) Dxf_Pair *new_object (
                     {
                       obj->type = obj->fixedtype = DWG_TYPE_DIMENSION_ORDINATE;
                       obj->name = (char *)"DIMENSION_ORDINATE";
+                      free (obj->dxfname);
                       obj->dxfname = strdup (obj->name);
                       strcpy (name, obj->name);
                       LOG_TRACE ("change type to %s\n", name);
@@ -10460,6 +10487,7 @@ static __nonnull ((1, 2, 3, 4)) Dxf_Pair *new_object (
                     {
                       obj->type = obj->fixedtype = DWG_TYPE_DIMENSION_DIAMETER;
                       obj->name = (char *)"DIMENSION_DIAMETER";
+                      free (obj->dxfname);
                       obj->dxfname = strdup (obj->name);
                       strcpy (name, obj->name);
                       LOG_TRACE ("change type to %s\n", name);
@@ -12306,26 +12334,41 @@ static __nonnull ((1, 2, 3, 4)) Dxf_Pair *new_object (
                           && strEQc (f->name, "num_clip_verts"))
                         {
                           BITCODE_2RD *clip_verts;
-                          BITCODE_BL num_clip_verts = pair->value.u;
+                          BITCODE_2RD *new_clip_verts;
+                          BITCODE_BL num_clip_verts
+                              = pair->code == 70 && pair->value.i < 0
+                                    ? 0
+                                    : pair->value.u;
                           if (pair->code == 91)
                             dwg_dynapi_entity_set_value (
                                 _obj, obj->name, f->name, &num_clip_verts, 0);
                           else
                             {
-                              BITCODE_BS num = pair->value.i; // 70
+                              BITCODE_BS num = pair->value.i < 0
+                                                   ? 0
+                                                   : pair->value.i; // 70
                               dwg_dynapi_entity_set_value (_obj, obj->name,
                                                            f->name, &num, 0);
                             }
                           dwg_dynapi_entity_value (_obj, obj->name,
                                                    "clip_verts", &clip_verts,
                                                    NULL);
-                          clip_verts = (BITCODE_2RD *)realloc (
-                              clip_verts,
-                              num_clip_verts * sizeof (BITCODE_2RD));
-                          if (!clip_verts)
-                            goto invalid_dxf;
+                          if (num_clip_verts)
+                            {
+                              new_clip_verts = (BITCODE_2RD *)realloc (
+                                  clip_verts,
+                                  num_clip_verts * sizeof (BITCODE_2RD));
+                              if (!new_clip_verts)
+                                goto invalid_dxf;
+                              clip_verts = new_clip_verts;
+                            }
+                          else
+                            {
+                              free (clip_verts);
+                              clip_verts = NULL;
+                            }
                           dwg_dynapi_entity_set_value (
-                              _obj, obj->name, f->name, &clip_verts, 0);
+                              _obj, obj->name, "clip_verts", &clip_verts, 0);
                           LOG_TRACE ("%s.num_clip_verts = %d [%s %d]\n", name,
                                      num_clip_verts, f->type, pair->code);
                         }
@@ -12364,7 +12407,7 @@ static __nonnull ((1, 2, 3, 4)) Dxf_Pair *new_object (
                                 }
 
                               // no need to realloc
-                              if (!j && pair->code == 14)
+                              if (!clip_verts && !j && pair->code == 14)
                                 {
                                   clip_verts = (BITCODE_2RD *)xcalloc (
                                       num_clip_verts, sizeof (BITCODE_2RD));
@@ -13938,10 +13981,17 @@ dxf_tables_read (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
                 // remove many empty entries at the end at once (avoids DDOS)
                 if (num_entries != _ctrl->num_entries)
                   {
-                    _ctrl->entries = (BITCODE_H *)realloc (
-                        _ctrl->entries, num_entries * sizeof (BITCODE_H));
-                    if (num_entries && !_ctrl->entries)
-                      goto outofmem;
+                    BITCODE_H *entries = NULL;
+                    if (num_entries)
+                      {
+                        entries = (BITCODE_H *)realloc (
+                            _ctrl->entries, num_entries * sizeof (BITCODE_H));
+                        if (!entries)
+                          goto outofmem;
+                      }
+                    else
+                      free (_ctrl->entries);
+                    _ctrl->entries = entries;
                     _ctrl->num_entries = num_entries;
                     LOG_TRACE ("%s.num_entries => %d\n", ctrl->name,
                                _ctrl->num_entries);
@@ -14139,8 +14189,7 @@ dxf_blocks_read (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
                                       = bctrl->tio.object->tio.BLOCK_CONTROL;
                                   if (_bctrl->num_entries > 0)
                                     _bctrl->entries[_bctrl->num_entries - 1]
-                                        ->r11_idx
-                                        = new_r11_idx;
+                                        ->r11_idx = new_r11_idx;
                                 }
                               LOG_TRACE ("r11: created BLOCK_HEADER %s "
                                          "[r11_idx %d]\n",
