@@ -7876,7 +7876,6 @@ new_table_control (const char *restrict name, Bit_Chain *restrict dat,
   Dxf_Pair *pair = NULL;
   Dwg_Object_LTYPE_CONTROL *_obj = NULL; // the largest
   int j = 0;
-  int is_tu = dwg->header.version >= R_2007 ? 1 : 0;
   char *fieldname;
   char ctrlname[80];
   char *dxfname;
@@ -8038,59 +8037,56 @@ new_table_control (const char *restrict name, Bit_Chain *restrict dat,
                      ARGS_REF (obj->tio.object->xdicobjhandle));
           break;
         case 70:
-          if (pair->value.u)
-            {
-              BITCODE_H *hdls;
-              // can be -1
-              BITCODE_BL num_entries = pair->value.i < 0 ? 0 : pair->value.i;
-              BITCODE_BL zero_entries = 0;
-              if (num_entries > INT32_MAX // BS overflow
-                  && obj->fixedtype != DWG_TYPE_BLOCK_CONTROL
-                  && obj->fixedtype != DWG_TYPE_LAYER_CONTROL
-                  && obj->fixedtype != DWG_TYPE_VIEW_CONTROL
-                  && obj->fixedtype != DWG_TYPE_STYLE_CONTROL)
-                {
-                  LOG_ERROR ("%s.num_entries BS overflow", obj->name);
-                  num_entries = 0;
-                }
-              // Pre-allocate for capacity but start at 0: entries are added
-              // via PUSH_HV so they land at index 0, 1, ... not after NULLs
-              hdls = num_entries ? (BITCODE_H *)xcalloc (num_entries,
-                                                         sizeof (BITCODE_H))
-                                 : NULL;
-              dwg_dynapi_entity_set_value (_obj, obj->name, "num_entries",
-                                           &zero_entries, 1);
-              LOG_TRACE ("%s.num_entries = %u [BL 70]\n", ctrlname,
-                         num_entries);
-              dwg_dynapi_entity_set_value (_obj, obj->name, "entries", &hdls,
-                                           0);
-              LOG_TRACE ("Add %d %s.%s\n", num_entries, ctrlname, "entries");
-            }
+          {
+            // can be -1
+            BITCODE_BL num_entries = pair->value.i < 0 ? 0 : pair->value.i;
+            if (num_entries > INT32_MAX // BS overflow
+                && obj->fixedtype != DWG_TYPE_BLOCK_CONTROL
+                && obj->fixedtype != DWG_TYPE_LAYER_CONTROL
+                && obj->fixedtype != DWG_TYPE_VIEW_CONTROL
+                && obj->fixedtype != DWG_TYPE_STYLE_CONTROL)
+              {
+                LOG_ERROR ("%s.num_entries BS overflow", obj->name);
+                num_entries = 0;
+              }
+            free (_obj->entries);
+            _obj->entries = NULL;
+            // Entries are appended with PUSH_HV; no capacity is tracked here.
+            _obj->num_entries = 0;
+            LOG_TRACE ("%s.num_entries = %u [BL 70]\n", ctrlname, num_entries);
+          }
           break;
         case 71:
           if (strEQc (ctrlname, "DIMSTYLE_CONTROL"))
             {
-              if (pair->value.u)
+              Dwg_Object_DIMSTYLE_CONTROL *o
+                  = (Dwg_Object_DIMSTYLE_CONTROL *)_obj;
+              BITCODE_RC num_morehandles = 0;
+              free (o->morehandles);
+              o->morehandles = NULL;
+              o->num_morehandles = 0;
+              j = 0;
+              if (pair->value.u > UINT8_MAX)
                 {
-                  BITCODE_H *hdls;
-                  hdls = (BITCODE_H *)xcalloc (pair->value.u,
-                                               sizeof (BITCODE_H));
-                  if (!hdls)
-                    pair->value.u = 0;
-                  dwg_dynapi_entity_set_value (
-                      _obj, obj->name, "num_morehandles", &pair->value, is_tu);
-                  LOG_TRACE ("%s.num_morehandles = %u [BL 71]\n", ctrlname,
-                             pair->value.u);
-                  dwg_dynapi_entity_set_value (_obj, obj->name, "morehandles",
-                                               &hdls, 0);
-                  LOG_TRACE ("Add %s.morehandles[%d]\n", ctrlname,
-                             pair->value.u);
+                  LOG_ERROR ("%s.num_morehandles RC overflow", obj->name);
                 }
               else
                 {
-                  LOG_TRACE ("%s.num_morehandles = %u [BL 71]\n", ctrlname,
-                             pair->value.u);
+                  num_morehandles = (BITCODE_RC)pair->value.u;
+                  if (num_morehandles)
+                    {
+                      o->morehandles = (BITCODE_H *)xcalloc (
+                          num_morehandles, sizeof (BITCODE_H));
+                      if (!o->morehandles)
+                        {
+                          LOG_ERROR ("Out of memory");
+                          num_morehandles = 0;
+                        }
+                    }
                 }
+              o->num_morehandles = num_morehandles;
+              LOG_TRACE ("%s.num_morehandles = %u [BL 71]\n", ctrlname,
+                         o->num_morehandles);
               break;
             }
           // fall through
@@ -14703,10 +14699,17 @@ dxf_tables_read (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
                 // remove many empty entries at the end at once (avoids DDOS)
                 if (num_entries != _ctrl->num_entries)
                   {
-                    _ctrl->entries = (BITCODE_H *)realloc (
-                        _ctrl->entries, num_entries * sizeof (BITCODE_H));
-                    if (num_entries && !_ctrl->entries)
-                      goto outofmem;
+                    BITCODE_H *entries = NULL;
+                    if (num_entries)
+                      {
+                        entries = (BITCODE_H *)realloc (
+                            _ctrl->entries, num_entries * sizeof (BITCODE_H));
+                        if (!entries)
+                          goto outofmem;
+                      }
+                    else
+                      free (_ctrl->entries);
+                    _ctrl->entries = entries;
                     _ctrl->num_entries = num_entries;
                     LOG_TRACE ("%s.num_entries => %d\n", ctrl->name,
                                _ctrl->num_entries);
