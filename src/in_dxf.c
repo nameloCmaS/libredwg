@@ -7580,6 +7580,7 @@ add_xdata (Bit_Chain *restrict dat, Dwg_Object *restrict obj,
   BITCODE_BL num_xdata, xdata_size;
   // add pairs to xdata linked list
   Dwg_Resbuf *rbuf;
+  Dwg_Resbuf *prev = NULL;
   Dwg_Object_XRECORD *_obj = obj->tio.object->tio.XRECORD;
 
   num_xdata = _obj->num_xdata;
@@ -7588,11 +7589,11 @@ add_xdata (Bit_Chain *restrict dat, Dwg_Object *restrict obj,
   if (!rbuf)
     {
       LOG_ERROR ("Out of memory");
-      return NULL;
+      return pair;
     }
-  if (num_xdata && _obj->xdata)
+  if (_obj->xdata)
     {
-      Dwg_Resbuf *xdata, *prev;
+      Dwg_Resbuf *xdata;
       // add to end, not front
       prev = xdata = _obj->xdata;
       while (xdata)
@@ -7600,10 +7601,7 @@ add_xdata (Bit_Chain *restrict dat, Dwg_Object *restrict obj,
           prev = xdata;
           xdata = xdata->nextrb;
         }
-      prev->nextrb = rbuf;
     }
-  else
-    _obj->xdata = rbuf;
 
   xdata_size += 2; // RS
   rbuf->type = pair->code;
@@ -7621,6 +7619,12 @@ add_xdata (Bit_Chain *restrict dat, Dwg_Object *restrict obj,
         rbuf->value.str.codepage = dwg->header.codepage;
         rbuf->value.str.is_tu = 0;
         rbuf->value.str.u.data = strdup (pair->value.s.ptr);
+        if (!rbuf->value.str.u.data)
+          {
+            LOG_ERROR ("Out of memory");
+            dwg_free_xdata_resbuf (rbuf);
+            return pair;
+          }
         LOG_TRACE ("xdata[%d]: \"%s\" [%d]\n", num_xdata,
                    rbuf->value.str.u.data, rbuf->type);
         xdata_size += 3 + rbuf->value.str.size;
@@ -7631,6 +7635,12 @@ add_xdata (Bit_Chain *restrict dat, Dwg_Object *restrict obj,
         rbuf->value.str.size = length & 0xFFFF;
         if (length > 0)
           rbuf->value.str.u.wdata = bit_utf8_to_TU (pair->value.s.ptr, 0);
+        if (length > 0 && !rbuf->value.str.u.wdata)
+          {
+            LOG_ERROR ("Out of memory");
+            dwg_free_xdata_resbuf (rbuf);
+            return pair;
+          }
         rbuf->value.str.is_tu = 1;
         LOG_TRACE ("xdata[%d]: \"%s\" [TU %d]\n", num_xdata, pair->value.s.ptr,
                    rbuf->type);
@@ -7673,7 +7683,10 @@ add_xdata (Bit_Chain *restrict dat, Dwg_Object *restrict obj,
       dxf_free_pair (pair);
       pair = dxf_read_pair (dat);
       if (!pair)
-        return NULL;
+        {
+          dwg_free_xdata_resbuf (rbuf);
+          return NULL;
+        }
       rbuf->value.pt[1] = pair->value.d;
       dxf_free_pair (pair);
       xdata_size += 24;
@@ -7681,7 +7694,10 @@ add_xdata (Bit_Chain *restrict dat, Dwg_Object *restrict obj,
         size_t pos = bit_position (dat);
         pair = dxf_read_pair (dat);
         if (!pair)
-          return NULL;
+          {
+            dwg_free_xdata_resbuf (rbuf);
+            return NULL;
+          }
         if (dwg_resbuf_value_type (pair->code) == DWG_VT_POINT3D)
           {
             rbuf->value.pt[2] = pair->value.d;
@@ -7704,10 +7720,17 @@ add_xdata (Bit_Chain *restrict dat, Dwg_Object *restrict obj,
       {
         // dxf_read_binary already decoded hex to binary for text DXF
         size_t blen = pair->value.s.len;
-        unsigned char *s = (unsigned char *)malloc (blen);
+        unsigned char *s = blen ? (unsigned char *)malloc (blen) : NULL;
+        if (blen && !s)
+          {
+            LOG_ERROR ("Out of memory");
+            dwg_free_xdata_resbuf (rbuf);
+            return pair;
+          }
         rbuf->value.str.u.data = (char *)s;
         rbuf->value.str.size = blen & 0xFFFF;
-        memcpy (s, pair->value.s.ptr, blen);
+        if (blen)
+          memcpy (s, pair->value.s.ptr, blen);
         xdata_size += 1 + (blen & 0xFFFF);
         LOG_TRACE ("xdata[%d]: ", num_xdata);
         // LOG_TRACE_TF (rbuf->value.str.u.data, rbuf->value.str.size);
@@ -7724,8 +7747,14 @@ add_xdata (Bit_Chain *restrict dat, Dwg_Object *restrict obj,
     default:
     invalid:
       LOG_ERROR ("Invalid group code in rbuf: %d", rbuf->type);
+      dwg_free_xdata_resbuf (rbuf);
+      return pair;
     }
 
+  if (prev)
+    prev->nextrb = rbuf;
+  else
+    _obj->xdata = rbuf;
   num_xdata++;
   _obj->num_xdata = num_xdata;
   _obj->xdata_size = xdata_size;
