@@ -3115,6 +3115,59 @@ in_postprocess_DICTIONARYWDFLT (Dwg_Object *obj)
 }
 */
 
+static void
+json_free_partial_object (Dwg_Data *restrict dwg, Dwg_Object *restrict obj)
+{
+  int isent = 0;
+  const char *dxfname = NULL;
+
+  if (!obj)
+    return;
+  if (!obj->parent)
+    obj->parent = dwg;
+  if (!obj->type && obj->name
+      && dwg_object_name (obj->name, &dxfname, &obj->fixedtype, &isent, NULL))
+    {
+      obj->type = obj->fixedtype;
+      obj->supertype = isent ? DWG_SUPERTYPE_ENTITY : DWG_SUPERTYPE_OBJECT;
+    }
+  if (obj->type && obj->type != DWG_TYPE_FREED && obj->parent
+      && obj->tio.object)
+    {
+      dwg_free_object (obj);
+      free (obj->unknown_bits);
+      obj->unknown_bits = NULL;
+      free (obj->unknown_rest);
+      obj->unknown_rest = NULL;
+      return;
+    }
+
+  if (obj->supertype == DWG_SUPERTYPE_ENTITY)
+    {
+      if (obj->tio.entity)
+        {
+          free (obj->tio.entity->tio.POINT);
+          free (obj->tio.entity);
+          obj->tio.entity = NULL;
+        }
+    }
+  else if (obj->tio.object)
+    {
+      free (obj->tio.object->tio.APPID);
+      free (obj->tio.object);
+      obj->tio.object = NULL;
+    }
+  free (obj->unknown_bits);
+  obj->unknown_bits = NULL;
+  free (obj->unknown_rest);
+  obj->unknown_rest = NULL;
+  free (obj->name);
+  obj->name = NULL;
+  free (obj->dxfname);
+  obj->dxfname = NULL;
+  obj->type = DWG_TYPE_FREED;
+}
+
 static int
 json_OBJECTS (Bit_Chain *restrict dat, Dwg_Data *restrict dwg,
               jsmntokens_t *restrict tokens)
@@ -3175,7 +3228,7 @@ json_OBJECTS (Bit_Chain *restrict dat, Dwg_Data *restrict dwg,
           if (dwg->header.from_version >= R_13b1 && !oldobj->handle.value)
             {
               LOG_ERROR ("Required %s.handle missing, skipped", oldobj->name);
-              dwg_free_object (oldobj);
+              json_free_partial_object (dwg, oldobj);
               obj = oldobj;
               i--;
             }
@@ -3187,7 +3240,7 @@ json_OBJECTS (Bit_Chain *restrict dat, Dwg_Data *restrict dwg,
                 LOG_ERROR ("Required %s.type missing, skipped", oldobj->name);
               if (!oldobj->parent)
                 oldobj->parent = dwg;
-              dwg_free_object (oldobj);
+              json_free_partial_object (dwg, oldobj);
               obj = oldobj;
               i--;
               size--;
@@ -3198,7 +3251,7 @@ json_OBJECTS (Bit_Chain *restrict dat, Dwg_Data *restrict dwg,
                          oldobj->name);
               if (!oldobj->parent)
                 oldobj->parent = dwg;
-              dwg_free_object (oldobj);
+              json_free_partial_object (dwg, oldobj);
               obj = oldobj;
               i--;
             }
@@ -3639,7 +3692,7 @@ json_OBJECTS (Bit_Chain *restrict dat, Dwg_Data *restrict dwg,
               if (!obj->type) // TODO: We could eventually relax this
                 {
                   LOG_ERROR ("Required %s.type missing", name);
-                  return DWG_ERR_INVALIDDWG;
+                  goto harderr;
                 }
             }
           // ignore subclass markers
@@ -3664,11 +3717,12 @@ json_OBJECTS (Bit_Chain *restrict dat, Dwg_Data *restrict dwg,
               size_t read;
               BITCODE_TF buf;
               if (!hex)
-                return DWG_ERR_INVALIDDWG;
+                goto harderr;
               buf = (BITCODE_TF)malloc (blen + 1);
               if (!buf)
                 {
                   free (hex);
+                  json_free_partial_object (dwg, obj);
                   return DWG_ERR_OUTOFMEM;
                 }
               if ((read = in_hex2bin (buf, hex, blen)) != blen)
@@ -3847,6 +3901,19 @@ json_OBJECTS (Bit_Chain *restrict dat, Dwg_Data *restrict dwg,
             }
         }
     }
+  if (size > 0 && dwg->object)
+    {
+      Dwg_Object *last_obj = &dwg->object[size - 1];
+      if (!last_obj->type
+          && (last_obj->tio.object || last_obj->tio.entity || last_obj->name
+              || last_obj->dxfname))
+        {
+          LOG_ERROR ("Required %s.type missing, skipped", last_obj->name);
+          json_free_partial_object (dwg, last_obj);
+          if (dwg->num_objects)
+            dwg->num_objects--;
+        }
+    }
   LOG_TRACE ("End of %s\n", section);
   tokens->index--;
   return 0;
@@ -3863,32 +3930,12 @@ harderr:
      (LSan). `obj` is loop-scoped, so use the current index. */
   if (dwg->object && i >= 0)
     {
-      Dwg_Object *err_obj = &dwg->object[i > 0 ? i - 1 : i];
-      if (err_obj->supertype == DWG_SUPERTYPE_ENTITY)
-        {
-          if (err_obj->tio.entity)
-            {
-              /* Payload is stored in the union. Free the allocated block we
-                 created (objsize) via the POINT alias used during parsing. */
-              free (err_obj->tio.entity->tio.POINT);
-              free (err_obj->tio.entity);
-            }
-          err_obj->tio.entity = NULL;
-        }
-      else
-        {
-          if (err_obj->tio.object)
-            {
-              free (err_obj->tio.object->tio.APPID);
-              free (err_obj->tio.object);
-            }
-          err_obj->tio.object = NULL;
-        }
-      free (err_obj->name);
-      err_obj->name = NULL;
-      free (err_obj->dxfname);
-      err_obj->dxfname = NULL;
-      err_obj->type = DWG_TYPE_FREED;
+      Dwg_Object *err_obj = &dwg->object[i];
+      if (!(err_obj->tio.object || err_obj->tio.entity || err_obj->name
+            || err_obj->dxfname)
+          && i > 0)
+        err_obj = &dwg->object[i - 1];
+      json_free_partial_object (dwg, err_obj);
     }
   if (tokens->index)
     tokens->index--;
@@ -3904,30 +3951,12 @@ typeerr:
   LOG_TRACE ("End of %s (type error)\n", section);
   if (dwg->object && i >= 0)
     {
-      Dwg_Object *err_obj = &dwg->object[i > 0 ? i - 1 : i];
-      if (err_obj->supertype == DWG_SUPERTYPE_ENTITY)
-        {
-          if (err_obj->tio.entity)
-            {
-              free (err_obj->tio.entity->tio.POINT);
-              free (err_obj->tio.entity);
-            }
-          err_obj->tio.entity = NULL;
-        }
-      else
-        {
-          if (err_obj->tio.object)
-            {
-              free (err_obj->tio.object->tio.APPID);
-              free (err_obj->tio.object);
-            }
-          err_obj->tio.object = NULL;
-        }
-      free (err_obj->name);
-      err_obj->name = NULL;
-      free (err_obj->dxfname);
-      err_obj->dxfname = NULL;
-      err_obj->type = DWG_TYPE_FREED;
+      Dwg_Object *err_obj = &dwg->object[i];
+      if (!(err_obj->tio.object || err_obj->tio.entity || err_obj->name
+            || err_obj->dxfname)
+          && i > 0)
+        err_obj = &dwg->object[i - 1];
+      json_free_partial_object (dwg, err_obj);
     }
   if (tokens->index)
     tokens->index--;
