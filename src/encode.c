@@ -4590,12 +4590,18 @@ fixup_invalid_tag (const Bit_Chain *restrict dat, char *restrict tag)
   int changed = 0;
   BITCODE_TV newtag;
   BITCODE_TU wstr;
+  int free_wstr;
   if (!tag)
     return NULL;
-  if (IS_FROM_TU (dat))
+  free_wstr = !IS_FROM_TU (dat);
+  if (!free_wstr)
     wstr = (BITCODE_TU)tag;
   else
-    wstr = bit_utf8_to_TU ((char*)tag, 0);
+    {
+      wstr = bit_utf8_to_TU ((char *)tag, 0);
+      if (!wstr)
+        return (BITCODE_T)tag;
+    }
   len = bit_wcs2len (wstr);
   for (size_t i = 0; i < len; i++)
     {
@@ -4621,11 +4627,20 @@ fixup_invalid_tag (const Bit_Chain *restrict dat, char *restrict tag)
   if (changed && dat->version < R_2007)
     {
       newtag = bit_convert_TU (wstr);
-      free (wstr);
-      return newtag;
+      if (free_wstr)
+        free (wstr);
+      if (newtag)
+        {
+          free (tag);
+          return newtag;
+        }
     }
   else
-    return (BITCODE_T)tag;
+    {
+      if (free_wstr)
+        free (wstr);
+    }
+  return (BITCODE_T)tag;
 }
 
 #define HANDLE_STREAM_ERROR_CLEANUP
