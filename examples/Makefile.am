@@ -21,6 +21,8 @@ WARN_CFLAGS = @WARN_CFLAGS@
 AM_CFLAGS   = -I$(top_srcdir)/include -I$(top_srcdir)/src $(WARN_CFLAGS)
 LDADD       = $(top_builddir)/src/libredwg.la
 CPPCHECK    = @CPPCHECK@
+LIB_FUZZING_ENGINE = @LIB_FUZZING_ENGINE@
+LIBREDWG_LLVMFUZZ_CFLAGS = @LIBREDWG_LLVMFUZZ_CFLAGS@
 
 if USE_WRITE
 bin_PROGRAMS     = dwgadd
@@ -51,12 +53,13 @@ dwgfuzz_SOURCES  = dwgfuzz.c
 #dwgfuzz_CFLAGS             = $(CFLAGS) $(AM_CFLAGS) -fsanitize=address,undefined -fno-omit-frame-pointer
 llvmfuzz_SOURCES            = llvmfuzz.c
 llvmfuzz_LDADD              = $(top_builddir)/src/libredwg.la $(top_builddir)/src/bits.lo \
-	                      $(top_builddir)/src/codepages.lo
+	                      $(top_builddir)/src/codepages.lo $(LIB_FUZZING_ENGINE)
 llvmfuzz_standalone_SOURCES = llvmfuzz.c
+llvmfuzz_CFLAGS             = $(CFLAGS) $(AM_CFLAGS)
 if HAVE_ASAN_OR_LINUX
 # needs CC=clang
-llvmfuzz_CFLAGS             = $(CFLAGS) $(AM_CFLAGS) -DHAVE_ASAN \
-                              -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer
+llvmfuzz_CFLAGS             += -DHAVE_ASAN \
+                              $(LIBREDWG_LLVMFUZZ_CFLAGS)
 # cflags already includes asan
 if HAVE_ASAN
 llvmfuzz_standalone_CFLAGS  = $(CFLAGS) $(AM_CFLAGS) -DSTANDALONE

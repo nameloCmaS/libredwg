@@ -72,6 +72,17 @@ AC_PROG_MAKE_SET
 AC_PROG_INSTALL
 AC_PROG_EGREP
 AC_CHECK_PROGS([BASH], [bash])
+AC_CHECK_PROGS([BREW], [brew])
+
+dnl Darwin's linker drops private externs while libtool incrementally reloads
+dnl large shared objects with ld -r.  Keep those symbols during reload so the
+dnl final libredwg dylib can resolve references between objects built with
+dnl -fvisibility=hidden.
+case "$host_os" in
+darwin*)
+    reload_cmds='$LTCC $LTCFLAGS -nostdlib $wl-r $wl-keep_private_externs -o $output$reload_objs'
+    ;;
+esac
 
 if test x$enable_shared = xyes; then
    AC_DEFINE([ENABLE_SHARED],1,[Define to 1 if a shared library will be built])
@@ -694,6 +705,56 @@ then
         HAVE_ASAN_OR_LINUX=1
 fi
 AM_CONDITIONAL([HAVE_ASAN_OR_LINUX],[test -n "$HAVE_ASAN_OR_LINUX"])
+
+AC_ARG_VAR([LIB_FUZZING_ENGINE],
+           [libFuzzer link flags for examples/llvmfuzz])
+LIBREDWG_LLVMFUZZ_CFLAGS="-fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer"
+if test -n "$LIB_FUZZING_ENGINE"; then
+    LIBREDWG_LLVMFUZZ_CFLAGS="-fsanitize=fuzzer-no-link,address,undefined -fno-omit-frame-pointer"
+fi
+
+case "$host_os" in
+darwin*)
+    if test -z "$LIB_FUZZING_ENGINE"; then
+        AC_MSG_CHECKING([for Darwin libFuzzer runtime])
+        libredwg_fuzzer_archive=
+        if test -n "$BREW"; then
+            libredwg_brew_llvm=`"$BREW" --prefix llvm 2>/dev/null`
+            if test -n "$libredwg_brew_llvm"; then
+                for libredwg_candidate in "$libredwg_brew_llvm"/lib/clang/*/lib/darwin/libclang_rt.fuzzer_osx.a
+                do
+                    if test -f "$libredwg_candidate"; then
+                        libredwg_fuzzer_archive="$libredwg_candidate"
+                        break
+                    fi
+                done
+            fi
+        fi
+        if test -z "$libredwg_fuzzer_archive"; then
+            for libredwg_candidate in \
+                /opt/homebrew/opt/llvm/lib/clang/*/lib/darwin/libclang_rt.fuzzer_osx.a \
+                /usr/local/opt/llvm/lib/clang/*/lib/darwin/libclang_rt.fuzzer_osx.a \
+                /opt/local/libexec/llvm-*/lib/clang/*/lib/darwin/libclang_rt.fuzzer_osx.a
+            do
+                if test -f "$libredwg_candidate"; then
+                    libredwg_fuzzer_archive="$libredwg_candidate"
+                    break
+                fi
+            done
+        fi
+        if test -n "$libredwg_fuzzer_archive"; then
+            LIB_FUZZING_ENGINE="$libredwg_fuzzer_archive -lc++"
+            LIBREDWG_LLVMFUZZ_CFLAGS="-fsanitize=fuzzer-no-link,address,undefined -fno-omit-frame-pointer"
+            AC_MSG_RESULT([$LIB_FUZZING_ENGINE])
+        else
+            AC_MSG_RESULT([not found])
+            AC_MSG_WARN([llvmfuzz on Darwin may need LIB_FUZZING_ENGINE=/path/to/libclang_rt.fuzzer_osx.a])
+        fi
+    fi
+    ;;
+esac
+AC_SUBST([LIB_FUZZING_ENGINE])
+AC_SUBST([LIBREDWG_LLVMFUZZ_CFLAGS])
 
 dnl Optional SWIG + python bindings
 dnl Feature: --disable-python or --enable-python=python3.6
