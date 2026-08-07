@@ -974,6 +974,7 @@ free_preR13_object (Dwg_Object *obj)
       LOG_ERROR (
           "Unhandled preR13 class %s, fixedtype %d in free_preR13_object()",
           dwg_type_name (obj->fixedtype), (int)obj->fixedtype);
+      error = dwg_free_variable_no_class (dwg, obj);
     }
 
   /* With indxf and injson the dxfname is dynamic, just the name is const */
