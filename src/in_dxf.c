@@ -14871,14 +14871,16 @@ dxf_blocks_read (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
               pair = new_object (name, dxfname, dat, dwg, 0, &i);
               dxfname = NULL; /* new_object may have freed dxfname via
                                  UPGRADE_ENTITY */
-              obj = &dwg->object[idx];
               if (!pair)
                 {
                   free (dxfname);
-                  if (idx != dwg->num_objects)
-                    obj->dxfname = NULL;
+                  if (idx < dwg->num_objects)
+                    dwg->object[idx].dxfname = NULL;
                   return DWG_ERR_INVALIDDWG;
                 }
+              if (idx >= dwg->num_objects)
+                continue;
+              obj = &dwg->object[idx];
               if (obj->type == DWG_TYPE_BLOCK)
                 {
                   Dwg_Object_Entity *ent = obj->tio.entity;
