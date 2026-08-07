@@ -1379,6 +1379,8 @@ json_CLASSES (Bit_Chain *restrict dat, Dwg_Data *restrict dwg,
   size = t->size;
   LOG_TRACE ("\n%s pos:%d [%d members]\n--------------------\n", section,
              tokens->index, size);
+  if (size == 0)
+    return 0;
   tokens->index++;
   if (dwg->num_classes == 0)
     dwg->dwg_class = (Dwg_Class *)calloc (size, sizeof (Dwg_Class));
