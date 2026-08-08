@@ -80,6 +80,15 @@ static Bit_Chain *g_dat;
 #define ACTION injson
 
 /******************************************************************/
+#define JSON_FREE_FIELD(nam)                                                  \
+  do                                                                          \
+    {                                                                         \
+      if (_obj->nam)                                                          \
+        free (_obj->nam);                                                     \
+      _obj->nam = NULL;                                                       \
+    }                                                                         \
+  while (0)
+
 #define _FIELD_FLOAT(nam, type)                                               \
   else if (strEQc (key, #nam))                                                \
   {                                                                           \
@@ -149,6 +158,7 @@ static Bit_Chain *g_dat;
   else if (strEQc (key, #nam))                                                \
   {                                                                           \
     size_t slen;                                                              \
+    JSON_FREE_FIELD (nam);                                                    \
     _obj->nam = json_binary (dat, tokens, #nam, &slen);                       \
     _obj->lenf = slen & 0xFFFFFFFF;                                           \
     JSON_TOKENS_CHECK_OVERFLOW_ERR                                            \
@@ -165,11 +175,12 @@ static Bit_Chain *g_dat;
           _obj->nam = (BITCODE_T)json_wstring (dat, tokens);                  \
         else                                                                  \
         */                                                                    \
+        JSON_FREE_FIELD (nam);                                                \
         _obj->nam = json_string (dat, tokens);                                \
       }                                                                       \
     else                                                                      \
       {                                                                       \
-        _obj->nam = NULL;                                                     \
+        JSON_FREE_FIELD (nam);                                                \
         json_advance_unknown (dat, tokens, t->type, 0);                       \
       }                                                                       \
     JSON_TOKENS_CHECK_OVERFLOW_ERR                                            \
@@ -181,10 +192,13 @@ static Bit_Chain *g_dat;
     LOG_TRACE (#nam ": \"%.*s\"\n", t->end - t->start,                        \
                &dat->chain[t->start]);                                        \
     if (t->type == JSMN_STRING)                                               \
-      _obj->nam = (BITCODE_T32)json_string (dat, tokens);                     \
+      {                                                                       \
+        JSON_FREE_FIELD (nam);                                                \
+        _obj->nam = (BITCODE_T32)json_string (dat, tokens);                   \
+      }                                                                       \
     else                                                                      \
       {                                                                       \
-        _obj->nam = NULL;                                                     \
+        JSON_FREE_FIELD (nam);                                                \
         json_advance_unknown (dat, tokens, t->type, 0);                       \
       }                                                                       \
     JSON_TOKENS_CHECK_OVERFLOW_ERR                                            \
@@ -196,11 +210,12 @@ static Bit_Chain *g_dat;
                &dat->chain[t->start]);                                        \
     if (t->type == JSMN_STRING)                                               \
       {                                                                       \
+        JSON_FREE_FIELD (nam);                                                \
         _obj->nam = json_string (dat, tokens);                                \
       }                                                                       \
     else                                                                      \
       {                                                                       \
-        _obj->nam = NULL;                                                     \
+        JSON_FREE_FIELD (nam);                                                \
         json_advance_unknown (dat, tokens, t->type, 0);                       \
       }                                                                       \
     JSON_TOKENS_CHECK_OVERFLOW_ERR                                            \
@@ -211,10 +226,13 @@ static Bit_Chain *g_dat;
     LOG_TRACE (#nam ": \"%.*s\"\n", t->end - t->start,                        \
                &dat->chain[t->start]);                                        \
     if (t->type == JSMN_STRING)                                               \
-      _obj->nam = json_wstring (dat, tokens);                                 \
+      {                                                                       \
+        JSON_FREE_FIELD (nam);                                                \
+        _obj->nam = json_wstring (dat, tokens);                               \
+      }                                                                       \
     else                                                                      \
       {                                                                       \
-        _obj->nam = NULL;                                                     \
+        JSON_FREE_FIELD (nam);                                                \
         json_advance_unknown (dat, tokens, t->type, 0);                       \
       }                                                                       \
     JSON_TOKENS_CHECK_OVERFLOW_ERR                                            \
