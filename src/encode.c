@@ -70,6 +70,14 @@ BITCODE_RLL dwg_obj_generic_handlevalue (void *_obj);
 Dwg_Object *dwg_obj_generic_to_object (const void *restrict obj,
                                        int *restrict error);
 
+static void
+replace_header_ref (BITCODE_H *field, BITCODE_H ref)
+{
+  if (*field && !(*field)->handleref.is_global)
+    free (*field);
+  *field = ref;
+}
+
 static int encode_preR13_section (const Dwg_Section_Type_r11 id,
                                   Bit_Chain *restrict dat,
                                   Dwg_Data *restrict dwg);
@@ -3055,8 +3063,8 @@ dwg_encode (Dwg_Data *restrict dwg, Bit_Chain *restrict dat)
                   obj->handle.value = 0xB;
                   LOG_TRACE ("adding VX_CONTROL object " FORMAT_RLL "\n",
                              obj->handle.value);
-                  dwg->header_vars.VX_TABLE_RECORD
-                      = dwg_add_handleref (dwg, 5, 0, NULL);
+                  replace_header_ref (&dwg->header_vars.VX_TABLE_RECORD,
+                                      dwg_add_handleref (dwg, 5, 0, NULL));
                 }
             }
           if (obj)
@@ -3509,8 +3517,8 @@ dwg_encode (Dwg_Data *restrict dwg, Bit_Chain *restrict dat)
                 obj->handle.value = 0xB;
                 LOG_TRACE ("adding VX_CONTROL object " FORMAT_RLL "\n",
                            obj->handle.value);
-                dwg->header_vars.VX_TABLE_RECORD
-                    = dwg_add_handleref (dwg, 5, 0, NULL);
+                replace_header_ref (&dwg->header_vars.VX_TABLE_RECORD,
+                                    dwg_add_handleref (dwg, 5, 0, NULL));
               }
           }
         if (obj)
