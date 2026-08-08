@@ -1052,6 +1052,7 @@ json_created_by (Bit_Chain *restrict dat, Dwg_Data *restrict dwg,
       json_advance_unknown (dat, tokens, t->type, 0);
       return DWG_ERR_INVALIDTYPE;
     }
+  free (created_by);
   created_by = json_string (dat, tokens);
   JSON_TOKENS_CHECK_OVERFLOW_ERR;
   LOG_TRACE ("created_by %s\n", created_by);
