@@ -3304,7 +3304,8 @@ json_OBJECTS (Bit_Chain *restrict dat, Dwg_Data *restrict dwg,
           JSON_TOKENS_CHECK_OVERFLOW (goto harderr)
           t = &tokens->tokens[tokens->index];
           if (strEQc (key, "object") && t->type == JSMN_STRING
-              && i < (int)dwg->num_objects && !dwg->object[i].type)
+              && i < (int)dwg->num_objects && !dwg->object[i].type
+              && !dwg->object[i].tio.object && !dwg->object[i].tio.entity)
             {
               int len = t->end - t->start;
               int objsize = 16;
@@ -3416,7 +3417,8 @@ json_OBJECTS (Bit_Chain *restrict dat, Dwg_Data *restrict dwg,
               JSON_TOKENS_CHECK_OVERFLOW (goto harderr)
             }
           else if (strEQc (key, "entity") && t->type == JSMN_STRING
-                   && i < (int)dwg->num_objects && !dwg->object[i].type)
+                   && i < (int)dwg->num_objects && !dwg->object[i].type
+                   && !dwg->object[i].tio.object && !dwg->object[i].tio.entity)
             {
               int len = t->end - t->start;
               int objsize;
