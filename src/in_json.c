@@ -383,6 +383,7 @@ json_string (Bit_Chain *restrict dat, jsmntokens_t *restrict tokens)
 {
   const jsmntok_t *t = &tokens->tokens[tokens->index];
   char *key = NULL;
+  char *tmp = NULL;
   int len;
   JSON_TOKENS_CHECK_OVERFLOW_NULL;
   len = t->end - t->start;
@@ -416,9 +417,13 @@ json_string (Bit_Chain *restrict dat, jsmntokens_t *restrict tokens)
               free (key);
               goto normal;
             }
-          key = (char *)realloc (key, len);
-          if (!key)
-            goto outofmemory;
+          tmp = (char *)realloc (key, len);
+          if (!tmp)
+            {
+              free (key);
+              goto outofmemory;
+            }
+          key = tmp;
         }
     }
   else
@@ -444,7 +449,7 @@ json_fixed_string (Bit_Chain *restrict dat, const int len,
 {
   const jsmntok_t *t = &tokens->tokens[tokens->index];
   char *str = NULL;
-  char *tmp;
+  char *tmp = NULL;
   int l;
   JSON_TOKENS_CHECK_OVERFLOW_NULL;
   l = t->end - t->start;
@@ -480,14 +485,15 @@ json_fixed_string (Bit_Chain *restrict dat, const int len,
             }
           tmp = (char *)realloc (str, dlen);
           if (!tmp)
-            goto outofmemory;
+            {
+              goto outofmemory;
+            }
           str = tmp;
         }
       str[len] = '\0';
     }
   else
     {
-      char *p;
     normal:
       if (!str)
         return NULL;
