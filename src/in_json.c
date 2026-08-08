@@ -539,10 +539,16 @@ json_binary (Bit_Chain *restrict dat, jsmntokens_t *restrict tokens,
       tokens->index++;
       return NULL;
     }
-  if ((read = in_hex2bin (buf, pos, blen) != blen))
-    LOG_ERROR ("json_binary in_hex2bin with key %s at pos %" PRIuSIZE
-               " of %" PRIuSIZE,
-               key, read, blen);
+  read = in_hex2bin (buf, pos, blen);
+  if (read != blen)
+    {
+      LOG_ERROR ("json_binary in_hex2bin with key %s at pos %" PRIuSIZE
+                 " of %" PRIuSIZE,
+                 key, read, blen);
+      free (buf);
+      tokens->index++;
+      return NULL;
+    }
   if (buf)
     {
       buf[blen] = '\0';
@@ -4031,6 +4037,7 @@ json_THUMBNAILIMAGE (Bit_Chain *restrict dat, Dwg_Data *restrict dwg,
       else if (strEQc (key, "chain"))
         {
           size_t len;
+          free (dwg->thumbnail.chain);
           dwg->thumbnail.chain = json_binary (dat, tokens, key, &len);
           JSON_TOKENS_CHECK_OVERFLOW_ERR
           dwg->thumbnail.size = len;
