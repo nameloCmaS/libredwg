@@ -13661,6 +13661,16 @@ static __nonnull ((1, 2, 3, 4)) Dxf_Pair *new_object (
                       else
                         dwg_dynapi_entity_set_value (_obj, obj->name, f->name,
                                                      &pair->value, 1);
+                      if (is_entity && dat->version <= R_12 && pair->code == 1
+                          && strEQc (f->name, "user_text")
+                          && (obj->fixedtype == DWG_TYPE_DIMENSION_ORDINATE
+                              || obj->fixedtype == DWG_TYPE_DIMENSION_LINEAR
+                              || obj->fixedtype == DWG_TYPE_DIMENSION_ALIGNED
+                              || obj->fixedtype == DWG_TYPE_DIMENSION_ANG3PT
+                              || obj->fixedtype == DWG_TYPE_DIMENSION_ANG2LN
+                              || obj->fixedtype == DWG_TYPE_DIMENSION_RADIUS
+                              || obj->fixedtype == DWG_TYPE_DIMENSION_DIAMETER))
+                        obj->tio.entity->opts_r11 |= 4;
                       if (f->is_string)
                         {
                           LOG_TRACE ("%s.%s = %s [%s %d]\n", name, f->name,
