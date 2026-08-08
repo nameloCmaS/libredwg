@@ -6336,10 +6336,18 @@ add_TABLEGEOMETRY_Cell (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
   BITCODE_BL num_cells = o->num_cells;
   int i = -1, j = -1;
 
+#  define RETURN_TABLEGEOMETRY_CELL_ERROR                                     \
+    do                                                                        \
+      {                                                                       \
+        dxf_free_pair (pair);                                                 \
+        return NULL;                                                          \
+      }                                                                       \
+    while (0)
+
   if (num_cells < 1)
     {
       free_TABLEGEOMETRY_cells (o);
-      return NULL;
+      RETURN_TABLEGEOMETRY_CELL_ERROR;
     }
 
   free_TABLEGEOMETRY_cells (o);
@@ -6348,7 +6356,7 @@ add_TABLEGEOMETRY_Cell (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
   if (!o->cells)
     {
       o->num_cells = 0;
-      return NULL;
+      RETURN_TABLEGEOMETRY_CELL_ERROR;
     }
   o->num_cells = num_cells;
 
@@ -6362,7 +6370,7 @@ add_TABLEGEOMETRY_Cell (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
           i++; // the first
 #  define CHK_cells                                                           \
     if (i < 0 || i >= (int)num_cells || !o->cells)                            \
-      return NULL;                                                            \
+      RETURN_TABLEGEOMETRY_CELL_ERROR;                                        \
     assert (i >= 0 && i < (int)num_cells);                                    \
     assert (o->cells)
 
@@ -6412,7 +6420,7 @@ add_TABLEGEOMETRY_Cell (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
           if (!o->cells[i].geometry)
             {
               o->cells[i].num_geometry = 0;
-              return NULL;
+              RETURN_TABLEGEOMETRY_CELL_ERROR;
             }
           j = -1;
           break;
@@ -6422,7 +6430,7 @@ add_TABLEGEOMETRY_Cell (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
 
 #  define CHK_geometry                                                        \
     if (j < 0 || j >= (int)o->cells[i].num_geometry || !o->cells[i].geometry) \
-      return NULL;                                                            \
+      RETURN_TABLEGEOMETRY_CELL_ERROR;                                        \
     assert (j >= 0 && j < (int)o->cells[i].num_geometry);                     \
     assert (o->cells[i].geometry)
 
@@ -6513,6 +6521,7 @@ add_TABLEGEOMETRY_Cell (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
 
 #  undef CHK_cells
 #  undef CHK_geometry
+#  undef RETURN_TABLEGEOMETRY_CELL_ERROR
 
 // starts with 71 or 75
 static Dxf_Pair *
@@ -14155,8 +14164,10 @@ static __nonnull ((1, 2, 3, 4)) Dxf_Pair *new_object (
                 {
                   // for the unknown subfields: 93, 40, ...
                   pair = add_TABLEGEOMETRY_Cell (obj, dat, pair);
+                  if (!pair)
+                    goto fail;
                   // returns with 0
-                  if (pair && pair->code == 0)
+                  if (pair->code == 0)
                     goto start_loop;
                 }
               else if (strEQc (name, "BLOCK")
@@ -14873,9 +14884,11 @@ dxf_blocks_read (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
                                  UPGRADE_ENTITY */
               if (!pair)
                 {
-                  free (dxfname);
                   if (idx < dwg->num_objects)
-                    dwg->object[idx].dxfname = NULL;
+                    {
+                      dwg_free_object (&dwg->object[idx]);
+                      dwg->num_objects--;
+                    }
                   return DWG_ERR_INVALIDDWG;
                 }
               if (idx >= dwg->num_objects)
