@@ -7887,6 +7887,7 @@ in_postprocess_SEQEND (Dwg_Object *restrict obj, BITCODE_BL num_owned,
   Dwg_Object *owner;
   Dwg_Entity_POLYLINE_2D *ow;
   const char *owhdls; // the name of the H*
+  const char *hasfield;
   const char *firstfield;
   const char *lastfield;
 
@@ -7935,6 +7936,8 @@ in_postprocess_SEQEND (Dwg_Object *restrict obj, BITCODE_BL num_owned,
 
   obj->tio.entity->ownerhandle->obj = NULL;
   owhdls = memBEGINc (owner->name, "POLYLINE_") ? "vertex" : "attribs";
+  hasfield
+      = memBEGINc (owner->name, "POLYLINE_") ? "has_vertex" : "has_attribs";
   // not the same layout for all possible owners
   ow = owner->tio.entity->tio.POLYLINE_2D;
   if (!num_owned || !owned)
@@ -7944,6 +7947,12 @@ in_postprocess_SEQEND (Dwg_Object *restrict obj, BITCODE_BL num_owned,
     }
   if (!num_owned)
     return;
+
+  if (owned)
+    {
+      BITCODE_B has_owned = 1;
+      dwg_dynapi_entity_set_value (ow, owner->name, hasfield, &has_owned, 0);
+    }
 
   if (memBEGINc (owner->name, "POLYLINE_"))
     {
@@ -8083,9 +8092,17 @@ in_postprocess_SEQEND (Dwg_Object *restrict obj, BITCODE_BL num_owned,
               num_owned = i;
             }
         }
-      dwg_dynapi_entity_set_value (ow, owner->name, "num_owned", &num_owned,
-                                   0);
-      dwg_dynapi_entity_set_value (ow, owner->name, owhdls, &owned, 0);
+      if (num_owned)
+        {
+          BITCODE_B has_owned = 1;
+          dwg_dynapi_entity_set_value (ow, owner->name, hasfield, &has_owned,
+                                       0);
+          dwg_dynapi_entity_set_value (ow, owner->name, "num_owned",
+                                       &num_owned, 0);
+          dwg_dynapi_entity_set_value (ow, owner->name, owhdls, &owned, 0);
+        }
+      else
+        free (owned);
     }
 }
 
