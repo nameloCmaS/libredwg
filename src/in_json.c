@@ -5438,6 +5438,11 @@ dwg_read_json (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
     dwg->header.version = dat->version = R_2000;
   */
   dat->version = R_2000;
+  dat->from_version = R_2000;
+  if (!dwg->header.version)
+    dwg->header.version = R_2000;
+  if (!dwg->header.from_version)
+    dwg->header.from_version = R_2000;
 
   jsmn_init (&parser); // reset pos to 0
   error = jsmn_parse (&parser, (char *)dat->chain, dat->size, tokens.tokens,
