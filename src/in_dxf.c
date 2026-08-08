@@ -14565,8 +14565,6 @@ dxf_tables_read (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
               ctrl = &dwg->object[ctrl_id];
               if (!pair)
                 {
-                  if (idx != dwg->num_objects)
-                    obj->dxfname = NULL;
                   return DWG_ERR_INVALIDDWG;
                 }
               // new_object may have reused an existing object (e.g.,
@@ -15229,10 +15227,7 @@ dxf_entities_read (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
               = NULL; /* new_object may have freed dxfname (UPGRADE_ENTITY) */
           if (!pair)
             {
-              Dwg_Object *obj = &dwg->object[idx];
               free (dxfname);
-              if (idx != dwg->num_objects)
-                obj->dxfname = NULL;
               return DWG_ERR_INVALIDDWG;
             }
           if (pair->code == 0 && pair->value.s.ptr)
@@ -15325,10 +15320,7 @@ dxf_objects_read (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
               dxfname = NULL; /* new_object may have freed dxfname via UPGRADE_ENTITY */
               if (!pair)
                 {
-                  Dwg_Object *obj = &dwg->object[idx];
                   free (dxfname);
-                  if (idx != dwg->num_objects)
-                    obj->dxfname = NULL;
                   return DWG_ERR_INVALIDDWG;
                 }
             }
