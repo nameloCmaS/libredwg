@@ -443,12 +443,11 @@ json_fixed_string (Bit_Chain *restrict dat, const int len,
                    jsmntokens_t *restrict tokens)
 {
   const jsmntok_t *t = &tokens->tokens[tokens->index];
-  char *str = (char *)calloc (len + 1, 1);
+  char *str = NULL;
+  char *tmp;
   int l;
   JSON_TOKENS_CHECK_OVERFLOW_NULL;
   l = t->end - t->start;
-  if (!str)
-    goto outofmemory;
   if (t->type != JSMN_STRING)
     {
       LOG_ERROR ("Expected JSON STRING");
@@ -456,6 +455,9 @@ json_fixed_string (Bit_Chain *restrict dat, const int len,
       JSON_TOKENS_CHECK_OVERFLOW_NULL
       return NULL;
     }
+  str = (char *)calloc (len + 1, 1);
+  if (!str)
+    goto outofmemory;
   // Unquote \", convert Unicode to \\U+xxxx as in bit_embed_TU
   // unquote \\ to \.
   if (memchr (&dat->chain[t->start], '\\', l))
@@ -476,9 +478,10 @@ json_fixed_string (Bit_Chain *restrict dat, const int len,
               str = NULL;
               goto normal;
             }
-          str = (char *)realloc (str, dlen);
-          if (!str)
+          tmp = (char *)realloc (str, dlen);
+          if (!tmp)
             goto outofmemory;
+          str = tmp;
         }
       str[len] = '\0';
     }
@@ -504,6 +507,7 @@ json_fixed_string (Bit_Chain *restrict dat, const int len,
   tokens->index++;
   return str;
 outofmemory:
+  free (str);
   LOG_ERROR ("Out of memory");
   return NULL;
 }
