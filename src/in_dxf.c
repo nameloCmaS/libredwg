@@ -2185,6 +2185,10 @@ dxf_header_read (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
     _obj->unit2_ratio = 6.162483e-14;
     _obj->unit3_ratio = 1.62263e+13;
     _obj->unit4_ratio = 2.63294e+26;
+    free (_obj->unit1_name);
+    free (_obj->unit2_name);
+    free (_obj->unit3_name);
+    free (_obj->unit4_name);
     _obj->unit1_name = dwg_add_u8_input (dwg, "meter");
     _obj->unit2_name = dwg_add_u8_input (dwg, "inch");
     _obj->unit3_name = dwg_add_u8_input (dwg, "inch");
