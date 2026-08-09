@@ -6141,9 +6141,17 @@ add_TABLESTYLE (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
   BITCODE_H hdl;
   int i = -1, j = -1;
 
+#  define RETURN_TABLESTYLE_INVALID_PAIR                                      \
+    do                                                                        \
+      {                                                                       \
+        dxf_free_pair (pair);                                                 \
+        return NULL;                                                          \
+      }                                                                       \
+    while (0)
+
 #  define CHK_rowstyles                                                       \
     if (!(i >= 0 && i < 3) || !o->num_rowstyles || !o->rowstyles)             \
-      return NULL;                                                            \
+      RETURN_TABLESTYLE_INVALID_PAIR;                                         \
     assert (i >= 0 && i < 3);                                                 \
     assert (o->num_rowstyles);                                                \
     assert (o->rowstyles)
@@ -6151,7 +6159,7 @@ add_TABLESTYLE (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
 #  define CHK_borders                                                         \
     if (!(j >= 0 && j <= 6) || !o->rowstyles[i].num_borders                   \
         || !o->rowstyles[i].borders)                                          \
-      return NULL;                                                            \
+      RETURN_TABLESTYLE_INVALID_PAIR;                                         \
     assert (j >= 0 && j < 6);                                                 \
     assert (o->rowstyles[i].num_borders);                                     \
     assert (o->rowstyles[i].borders)
@@ -6167,7 +6175,7 @@ add_TABLESTYLE (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
           CHK_rowstyles;
           hdl = find_tablehandle (dwg, pair);
           if (!hdl)
-            return NULL;
+            RETURN_TABLESTYLE_INVALID_PAIR;
           assert (hdl);
           o->rowstyles[i].text_style = hdl;
           LOG_TRACE ("%s.rowstyles[%d].text_style = " FORMAT_REF " [H %d]\n",
@@ -6232,7 +6240,7 @@ add_TABLESTYLE (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
           CHK_rowstyles;
           j = pair->code - 274;
           if (j < 0 || j >= 6)
-            return NULL;
+            RETURN_TABLESTYLE_INVALID_PAIR;
           assert (j >= 0 && j <= 6);
           if (!o->rowstyles[i].borders)
             {
@@ -6241,7 +6249,7 @@ add_TABLESTYLE (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
               if (!o->rowstyles[i].borders)
                 {
                   o->rowstyles[i].num_borders = 0;
-                  return NULL;
+                  RETURN_TABLESTYLE_INVALID_PAIR;
                 }
               o->rowstyles[i].num_borders = 6;
             }
@@ -6322,6 +6330,7 @@ add_TABLESTYLE (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
       dxf_free_pair (pair);
       pair = dxf_read_pair (dat);
     }
+#  undef RETURN_TABLESTYLE_INVALID_PAIR
   return pair;
 }
 
