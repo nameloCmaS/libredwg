@@ -7488,6 +7488,12 @@ add_PERSUBENTMGR (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
   Dwg_Data *dwg = obj->parent;
 
   EXPECT_UINT_DXF ("class_version", 90, BL);
+  if (o->class_version > 3)
+    {
+      LOG_ERROR ("Invalid PERSUBENTMGR.class_version " FORMAT_BL,
+                 o->class_version);
+      o->class_version = 0;
+    }
   FIELD_BL (unknown_0, 90);
   FIELD_BL (unknown_2, 90);
   FIELD_BL (numassocsteps, 90);
