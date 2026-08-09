@@ -3727,7 +3727,15 @@ add_HATCH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
       dxf_free_pair (pair);
       pair = dxf_read_pair (dat);
 
-      if (pair == NULL || pair->code == 0 || pair->code == 75)
+      if (pair == NULL)
+        {
+          free_HATCH_paths (o);
+          free_HATCH_deflines (o);
+          free_HATCH_colors (o);
+          free_HATCH_seeds (o);
+          return NULL;
+        }
+      if (pair->code == 0 || pair->code == 75)
         return pair;
       else if (pair->code == 92)
         {
