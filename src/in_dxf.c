@@ -3684,6 +3684,13 @@ add_HATCH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
       free_HATCH_paths (o);
       o->num_paths = pair->value.u;
       LOG_TRACE ("HATCH.num_paths = %u [BS 91]\n", o->num_paths);
+      if (o->num_paths > 10000)
+        {
+          LOG_ERROR ("Invalid HATCH.num_paths " FORMAT_BL, o->num_paths);
+          o->num_paths = 0;
+          dxf_free_pair (pair);
+          return NULL;
+        }
       o->paths
           = (Dwg_HATCH_Path *)xcalloc (o->num_paths, sizeof (Dwg_HATCH_Path));
       if (!o->paths)
