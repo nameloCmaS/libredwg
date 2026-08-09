@@ -3690,6 +3690,7 @@ add_HATCH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
            Dxf_Pair *restrict pair)
 {
   BITCODE_BL num_paths; // 91
+  Dwg_Data *dwg = obj->parent;
   Dwg_Entity_HATCH *o = obj->tio.entity->tio.HATCH;
   int is_plpath = 0;
   int j = -1;
@@ -3735,7 +3736,7 @@ add_HATCH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
           return NULL;
         }
     }
-  if (pair->code == 453)
+  if (pair->code == 453 && dwg->header.from_version >= R_2004a)
     {
       free_HATCH_colors (o);
       o->num_colors = pair->value.l;
@@ -4564,6 +4565,14 @@ add_HATCH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
           LOG_TRACE ("HATCH.paths[%d].boundary_handles[%d] = " FORMAT_REF
                      " [H 330]\n",
                      j, hdl_idx, ARGS_REF (ref));
+        }
+      else if (dwg->header.from_version < R_2004a
+               && (pair->code == 450 || pair->code == 451 || pair->code == 452
+                   || pair->code == 453 || pair->code == 460
+                   || pair->code == 461 || pair->code == 462
+                   || pair->code == 463 || pair->code == 470))
+        {
+          goto unknown_HATCH;
         }
       else if (pair->code == 453)
         {
@@ -13462,6 +13471,12 @@ static __nonnull ((1, 2, 3, 4)) Dxf_Pair *new_object (
                       else if (obj->fixedtype == DWG_TYPE_VISUALSTYLE
                                && dwg->header.from_version < R_2013b
                                && strEQc (f->name, "strokes"))
+                        {
+                          goto next_pair;
+                        }
+                      else if (obj->fixedtype == DWG_TYPE_HATCH
+                               && dwg->header.from_version < R_2004a
+                               && strEQc (f->name, "gradient_name"))
                         {
                           goto next_pair;
                         }
