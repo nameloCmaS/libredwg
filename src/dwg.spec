@@ -624,6 +624,7 @@ DWG_ENTITY (BLOCK)
     }
     FREE { // set via dwg_add_BLOCK
       FIELD_TV (name, 2);
+      FIELD_TV (xref_pname, 1);
     }
   }
 #endif
