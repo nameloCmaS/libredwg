@@ -3515,6 +3515,13 @@ add_MESH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
         {
           j = 0;
           vector = pair->code;
+          if (pair->value.u > 20000)
+            {
+              LOG_ERROR ("Invalid MESH.num_edges %u [BL %d]", pair->value.u,
+                         pair->code);
+              dxf_free_pair (pair);
+              return NULL;
+            }
           free (o->edges);
           o->edges = NULL;
           o->num_edges = pair->value.u;
