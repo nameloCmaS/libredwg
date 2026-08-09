@@ -12743,12 +12743,13 @@ static __nonnull ((1, 2, 3, 4)) Dxf_Pair *new_object (
               else
                 goto search_field;
             }
-          else if (obj->fixedtype == DWG_TYPE_MTEXT && pair->code == 46)
+          else if (obj->fixedtype == DWG_TYPE_MTEXT && pair->code == 46
+                   && dwg->header.from_version >= R_2018)
             {
               Dwg_Entity_MTEXT *o = obj->tio.entity->tio.MTEXT;
               if (!o->num_column_heights)
                 o->num_column_heights = 1;
-              if (!j)
+              if (!o->column_heights)
                 {
                   o->column_heights = (BITCODE_BD *)xcalloc (
                       o->num_column_heights, sizeof (BITCODE_BD));
@@ -12765,6 +12766,7 @@ static __nonnull ((1, 2, 3, 4)) Dxf_Pair *new_object (
               o->column_heights[j] = pair->value.d;
               LOG_TRACE ("MTEXT.column_heights[%d] = %f [BD* 46]\n", j,
                          pair->value.d);
+              j++;
             }
           else if (obj->fixedtype == DWG_TYPE_GEODATA)
             {
