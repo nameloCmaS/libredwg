@@ -13486,6 +13486,12 @@ static __nonnull ((1, 2, 3, 4)) Dxf_Pair *new_object (
                         {
                           goto next_pair;
                         }
+                      else if (obj->fixedtype == DWG_TYPE_BLOCK_HEADER
+                               && dwg->header.from_version < R_13b1
+                               && strEQc (f->name, "xref_pname"))
+                        {
+                          goto next_pair;
+                        }
                       // convert angle to radians
                       else if (pair->code >= 50 && pair->code <= 55)
                         {
