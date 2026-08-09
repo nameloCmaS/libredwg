@@ -3428,6 +3428,15 @@ add_MESH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
   int j = 0;
   int vector = 0;
 
+#  define CHK_MESH_array(i, array)                                            \
+    if (i < 0 || i >= (int)o->num_##array || !o->array)                       \
+      {                                                                       \
+        dxf_free_pair (pair);                                                 \
+        return NULL;                                                          \
+      }                                                                       \
+    assert (o->array);                                                        \
+    assert (i >= 0 && i < (int)o->num_##array)
+
   // No DXF group maps these trailing mesh flags; preserve stable defaults.
   o->unknown_b1 = 1;
   o->unknown_b2 = 0;
@@ -3542,12 +3551,12 @@ add_MESH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
         {
           if (vector == 91)
             {
-              CHK_array (j, subdiv_vertex);
+              CHK_MESH_array (j, subdiv_vertex);
               o->subdiv_vertex[j].x = pair->value.d;
             }
           else if (vector == 92)
             {
-              CHK_array (j, vertex);
+              CHK_MESH_array (j, vertex);
               o->vertex[j].x = pair->value.d;
             }
           else
@@ -3557,12 +3566,12 @@ add_MESH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
         {
           if (vector == 91)
             {
-              CHK_array (j, subdiv_vertex);
+              CHK_MESH_array (j, subdiv_vertex);
               o->subdiv_vertex[j].y = pair->value.d;
             }
           else if (vector == 92)
             {
-              CHK_array (j, vertex);
+              CHK_MESH_array (j, vertex);
               o->vertex[j].y = pair->value.d;
             }
           else
@@ -3572,7 +3581,7 @@ add_MESH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
         {
           if (vector == 91)
             {
-              CHK_array (j, subdiv_vertex);
+              CHK_MESH_array (j, subdiv_vertex);
               o->subdiv_vertex[j].z = pair->value.d;
               LOG_TRACE ("MESH.subdiv_vertex[%d] = (%f, %f, %f) [3BD 10]\n", j,
                          o->subdiv_vertex[j].x, o->subdiv_vertex[j].y,
@@ -3581,7 +3590,7 @@ add_MESH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
             }
           else if (vector == 92)
             {
-              CHK_array (j, vertex);
+              CHK_MESH_array (j, vertex);
               o->vertex[j].z = pair->value.d;
               LOG_TRACE ("MESH.vertex[%d] = (%f, %f, %f) [3BD 10]\n", j,
                          o->vertex[j].x, o->vertex[j].y, o->vertex[j].z);
@@ -3594,7 +3603,7 @@ add_MESH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
         {
           if (vector == 93)
             {
-              CHK_array (j, faces);
+              CHK_MESH_array (j, faces);
               o->faces[j] = pair->value.u;
               LOG_TRACE ("MESH.faces[%d] = %u [BL %d]\n", j, pair->value.u,
                          pair->code);
@@ -3603,7 +3612,7 @@ add_MESH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
           else if (vector == 94)
             {
               int i = j / 2;
-              CHK_array (i, edges);
+              CHK_MESH_array (i, edges);
               assert (j < (int)(2 * o->num_edges));
               if (j % 2 == 0)
                 {
@@ -3642,7 +3651,7 @@ add_MESH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
         {
           if (vector == 95)
             {
-              CHK_array (j, crease);
+              CHK_MESH_array (j, crease);
               o->crease[j] = pair->value.u;
               LOG_TRACE ("MESH.crease[%d] = %u [BD %d]\n", j, pair->value.u,
                          pair->code);
@@ -3661,6 +3670,7 @@ add_MESH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
           LOG_ERROR ("Unknown DXF code %d for %s", pair->code, "MESH");
         }
     }
+#  undef CHK_MESH_array
   return pair;
 }
 
