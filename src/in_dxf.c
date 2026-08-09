@@ -13459,6 +13459,12 @@ static __nonnull ((1, 2, 3, 4)) Dxf_Pair *new_object (
                           text[255] = '\0';
                           goto next_pair; // skip setting texts TV*
                         }
+                      else if (obj->fixedtype == DWG_TYPE_VISUALSTYLE
+                               && dwg->header.from_version < R_2013b
+                               && strEQc (f->name, "strokes"))
+                        {
+                          goto next_pair;
+                        }
                       // convert angle to radians
                       else if (pair->code >= 50 && pair->code <= 55)
                         {
