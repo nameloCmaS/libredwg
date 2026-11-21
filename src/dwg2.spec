@@ -3460,6 +3460,14 @@ DWG_OBJECT_END
   DECODER {                                     \
     FIELD_BL (be_major, 98);                    \
     FIELD_BL (be_minor, 99);                    \
+  } else if (FIELD_VALUE (be_major) && !IF_IS_DXF \
+             && dat->version >= R_2007a) {      \
+    /* keep the version of the element:        \
+       AutoCAD rejects a BLOCKSCALEACTION      \
+       with 29 for a 377 element ("not a       \
+       valid drawing") */                      \
+    FIELD_BL (be_major, 98);                    \
+    FIELD_BL (be_minor, 99);                    \
   } else {                                      \
     PRE (R_2007a) {                             \
       VALUE_BL (25, 98);                        \
@@ -3763,6 +3771,13 @@ DWG_OBJECT (BLOCKSCALEACTION)
   // codes 94-96, 303-305 into conn_pts[2..4]; [0..1] are the two
   // WithBasePt connection points. starting at 0 would overwrite them.
   BlockAction_ConnectionPts (conn_pts, 2, 3, 92, 301);
+#ifndef IS_DXF
+  // AutoCAD has one more byte, 0 in all objects seen, before the strings,
+  // in its R2000 and R2004 files too (the handle stream starts 8 bits
+  // later). AutoCAD rejects a file without it.
+  ENCODER { bit_write_RC (dat, 0); }
+  DECODER { (void)bit_read_RC (dat); }
+#endif
   START_OBJECT_HANDLE_STREAM;
 DWG_OBJECT_END
 
@@ -3849,8 +3864,14 @@ DWG_ENTITY (PLANESURFACE)
   COMMON_ENTITY_HANDLE_DATA;
 DWG_ENTITY_END
 
+/* AutoCAD writes class_version 3 before R2010 and 4 since (all context \
+   data classes seen in AutoCAD's R2000-R2018 DXF). */                  \
 #define AcDbObjectContextData_fields                                    \
   SUBCLASS (AcDbObjectContextData);                                     \
+  ENCODER {                                                             \
+    if (dat->version < R_2010b && FIELD_VALUE (class_version) > 3)      \
+      FIELD_VALUE (class_version) = 3;                                  \
+  }                                                                     \
   FIELD_BS (class_version, 70);                                         \
   FIELD_B (is_default, 290)
 
