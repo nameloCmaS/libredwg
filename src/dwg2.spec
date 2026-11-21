@@ -2038,6 +2038,11 @@ DWG_OBJECT_END
   {                                                                           \
     _obj->is_r2013 = 1;                                                       \
   }                                                                           \
+  /* 0 before r2013, as AutoCAD writes it (no aap_version then) */            \
+  ENCODER {                                                                   \
+    PRE (R_2013b)                                                             \
+      _obj->is_r2013 = 0;                                                     \
+  }                                                                           \
   FIELD_BS (is_r2013, 90);                                                    \
   SINCE (R_2013b)                                                             \
   {                                                                           \
@@ -3238,7 +3243,23 @@ DWG_OBJECT_END
 #define AcDbAssocAction_fields                                                \
   SUBCLASS (AcDbAssocAction);                                                 \
   /* until r2010: 1, 2013+: 2 */                                              \
-  FIELD_BS (class_version, 90);                                               \
+  /* AutoCAD writes 1 to r2010 and older, without the owned params            \
+     and values. AutoCAD cannot read r2010 output with 2. The object          \
+     keeps its class_version, which free() follows. */                        \
+  ENCODER {                                                                   \
+    if (dat->version < R_2013b && FIELD_VALUE (class_version) > 1)            \
+      {                                                                       \
+        VALUE_BS (1, 90);                                                     \
+      }                                                                       \
+    else                                                                      \
+      {                                                                       \
+        FIELD_BS (class_version, 90);                                         \
+      }                                                                       \
+  }                                                                           \
+  else                                                                        \
+  {                                                                           \
+    FIELD_BS (class_version, 90);                                             \
+  }                                                                           \
   /* 0 WellDefined, 1 UnderConstrained, 2 OverConstrained,                    \
      3 Inconsistent, 4 NotEvaluated, 5 NotAvailable,                          \
      6 RejectedByClient */                                                    \
@@ -3260,16 +3281,21 @@ DWG_OBJECT_END
   END_REPEAT (deps);                                                          \
   if (FIELD_VALUE (class_version) > 1)                                        \
     {                                                                         \
-      VALUE_BS (0, 90);                                                       \
-      FIELD_BL (num_owned_params, 90);                                        \
-      HANDLE_VECTOR (owned_params, num_owned_params, 3, 360);                 \
-      VALUE_BS (0, 90);                                                       \
-      FIELD_BL (num_values, 90);                                              \
-      REPEAT (num_values, values, Dwg_VALUEPARAM)                             \
-      REPEAT_BLOCK                                                            \
-        AcDbValueParam_fields (values[rcount1]);                              \
-      END_REPEAT_BLOCK                                                        \
-      END_REPEAT (values);                                                    \
+      int with_params = 1;                                                    \
+      ENCODER { with_params = dat->version >= R_2013b; }                      \
+      if (with_params)                                                        \
+        {                                                                     \
+          VALUE_BS (0, 90);                                                   \
+          FIELD_BL (num_owned_params, 90);                                    \
+          HANDLE_VECTOR (owned_params, num_owned_params, 3, 360);             \
+          VALUE_BS (0, 90);                                                   \
+          FIELD_BL (num_values, 90);                                          \
+          REPEAT (num_values, values, Dwg_VALUEPARAM)                         \
+          REPEAT_BLOCK                                                        \
+            AcDbValueParam_fields (values[rcount1]);                          \
+          END_REPEAT_BLOCK                                                    \
+          END_REPEAT (values);                                                \
+        }                                                                     \
     }
 
 // (varies) stable
