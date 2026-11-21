@@ -67,6 +67,7 @@ Dwg_Object_VX_TABLE_RECORD *dwg_add_VX (Dwg_Data *restrict dwg,
                                         const char *restrict name);
 static void downconvert_VX (Dwg_Data *restrict dwg);
 static void downconvert_subentity_links (Dwg_Data *restrict dwg);
+static void downconvert_assoc_pab (Dwg_Data *restrict dwg);
 BITCODE_RLL dwg_obj_generic_handlevalue (void *_obj);
 Dwg_Object *dwg_obj_generic_to_object (const void *restrict obj,
                                        int *restrict error);
@@ -2953,6 +2954,8 @@ dwg_encode (Dwg_Data *restrict dwg, Bit_Chain *restrict dat)
     LOG_TRACE ("Encode version %s (%s)\n",
                dwg_version_codes (dwg->header.version),
                dwg_version_type (dwg->header.version));
+  if (dwg->header.version < R_2013b && dwg->header.from_version >= R_2013b)
+    downconvert_assoc_pab (dwg);
 
 #ifdef ENCODE_UNKNOWN_AS_DUMMY
   // We cannot write unknown_bits into another version, or when it's coming
@@ -5137,6 +5140,81 @@ downconvert_subentity_links (Dwg_Data *restrict dwg)
         default:
           break;
         }
+    }
+}
+
+/* r2010 and older from r2013+: AutoCAD keeps the owned action params and the
+   value params of a parameter-based action body in the body
+   (AcDbAssocParamBasedActionBody, aab_version 1), and the params are owned by
+   the body. r2013+ has both in the ASSOCACTION (class_version 2), which the
+   spec writes without them before r2013, so they move back to the body here
+   (e.g. for an ASSOCARRAYACTIONBODY), as in AutoCAD's DXF of the same object
+   at R2000-R2018.
+   Not touched: geometry_status and ASSOCNETWORK.owned_actions. AutoCAD's
+   outputs differ there by evaluation state, not by version (R2007 and R2018:
+   0 and none; R2000-R2013: 1 and the actions again). */
+static void
+downconvert_assoc_pab (Dwg_Data *restrict dwg)
+{
+  BITCODE_BL i, j;
+  for (i = 0; i < dwg->num_objects; i++)
+    {
+      Dwg_Object *obj = &dwg->object[i];
+      Dwg_Object_ASSOCACTION *act;
+      Dwg_Object *body;
+      const Dwg_DYNAPI_field *f;
+      Dwg_ASSOCPARAMBASEDACTIONBODY *pab;
+      BITCODE_BL *aab_version;
+      if (obj->fixedtype != DWG_TYPE_ASSOCACTION || !obj->tio.object
+          || !obj->tio.object->tio.ASSOCACTION)
+        continue;
+      act = obj->tio.object->tio.ASSOCACTION;
+      if (act->class_version < 2 || !act->actionbody)
+        continue;
+      body = dwg_ref_object (dwg, act->actionbody);
+      if (!body || body->supertype != DWG_SUPERTYPE_OBJECT || !body->tio.object
+          || !body->tio.object->tio.APPID || !body->name)
+        continue;
+      f = dwg_dynapi_entity_field (body->name, "pab");
+      if (!f || strNE (f->type, "Dwg_ASSOCPARAMBASEDACTIONBODY"))
+        continue;
+      pab = (Dwg_ASSOCPARAMBASEDACTIONBODY *)((char *)body->tio.object
+                                                   ->tio.APPID
+                                               + f->offset);
+      f = dwg_dynapi_entity_field (body->name, "aab_version");
+      if (f)
+        {
+          aab_version = (BITCODE_BL *)((char *)body->tio.object->tio.APPID
+                                       + f->offset);
+          if (*aab_version > 1)
+            *aab_version = 1;
+        }
+      if (!pab->num_deps && act->num_owned_params && act->owned_params)
+        {
+          pab->num_deps = act->num_owned_params;
+          pab->deps = act->owned_params;
+          act->num_owned_params = 0;
+          act->owned_params = NULL;
+          for (j = 0; j < pab->num_deps; j++)
+            {
+              Dwg_Object *o
+                  = pab->deps[j] ? dwg_ref_object (dwg, pab->deps[j]) : NULL;
+              if (o && o->supertype == DWG_SUPERTYPE_OBJECT && o->tio.object)
+                o->tio.object->ownerhandle
+                    = dwg_add_handleref (dwg, 4, body->handle.value, o);
+            }
+        }
+      if (!pab->num_values && act->num_values && act->values)
+        {
+          pab->num_values = act->num_values;
+          pab->values = act->values;
+          act->num_values = 0;
+          act->values = NULL;
+        }
+      LOG_TRACE ("downconvert_assoc_pab: %s " FORMAT_RLLx
+                 " deps %u values %u\n",
+                 body->name, body->handle.value, (unsigned)pab->num_deps,
+                 (unsigned)pab->num_values);
     }
 }
 
