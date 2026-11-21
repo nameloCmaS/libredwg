@@ -1371,6 +1371,10 @@ downconvert_DIMSTYLE (Bit_Chain *restrict dat, Dwg_Object *restrict obj)
       eedhdl1 = dwg_obj_generic_handlevalue (appid);
       LOG_TRACE ("Added APPID.AcadAnnotative (" FORMAT_HV ")\n", eedhdl1);
     }
+#if 0
+  /* Off by default: AutoCAD (LT 2027) writes no ACAD_DSTYLE_DIMJAG/DIMTALN
+     EED nor APPIDs to r2000. The values here (388/1.5, 392/0) are guesses,
+     and AutoCAD cannot open a file whose DIMSTYLE has this EED. */
   hdl = dwg_find_tablehandle_silent (dwg, "ACAD_DSTYLE_DIMJAG", "APPID");
   if (hdl)
     {
@@ -1395,6 +1399,7 @@ downconvert_DIMSTYLE (Bit_Chain *restrict dat, Dwg_Object *restrict obj)
       eedhdl3 = dwg_obj_generic_handlevalue (appid);
       LOG_TRACE ("Added APPID.ACAD_DSTYLE_DIMTALN (" FORMAT_HV ")\n", eedhdl3);
     }
+#endif
   // obj may have moved, but dirty_refs is 0 (a dirty_objs is useless)
   obj = &dwg->object[oindex];
   if (obj->fixedtype != DWG_TYPE_DIMSTYLE || !obj->tio.object)
@@ -1453,6 +1458,10 @@ downconvert_DIMSTYLE (Bit_Chain *restrict dat, Dwg_Object *restrict obj)
       oo->eed[idx].raw = NULL;
     }
 
+#if 0
+  /* Off by default: AutoCAD (LT 2027) writes no ACAD_DSTYLE_DIMJAG/DIMTALN
+     EED nor APPIDs to r2000. The values here (388/1.5, 392/0) are guesses,
+     and AutoCAD cannot open a file whose DIMSTYLE has this EED. */
   if (!dwg_has_eed_appid (oo, eedhdl2))
     {
       LOG_TRACE ("Add EED for ACAD_DSTYLE_DIMJAG to " FORMAT_HV "\n",
@@ -1511,6 +1520,7 @@ downconvert_DIMSTYLE (Bit_Chain *restrict dat, Dwg_Object *restrict obj)
       oo->eed[idx].data = NULL;
       oo->eed[idx].raw = NULL;
     }
+#endif
 #undef EED_SZ
   if (idx != oo->num_eed)
     {
