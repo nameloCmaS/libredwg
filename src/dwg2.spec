@@ -157,7 +157,9 @@ DWG_OBJECT (SORTENTSTABLE)
   hdl_dat = str_dat;
 
   START_OBJECT_HANDLE_STREAM;
-  FIELD_HANDLE (block_owner, 4, 0); // mspace or pspace
+  // the model or paper space BLOCK_HEADER of the SORTENTSTABLE; AUDIT
+  // reports an invalid block id without the 330.
+  FIELD_HANDLE (block_owner, 4, 330);
   HANDLE_VECTOR_N (ents, FIELD_VALUE (num_ents), 4, 0);
 
   DXF {
