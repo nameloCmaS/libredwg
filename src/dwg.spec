@@ -4780,8 +4780,9 @@ DWG_ENTITY (HATCH)
                       REPEAT3 (segx[rcount2].num_control_points, control_points, Dwg_HATCH_ControlPoint)
                       REPEAT_BLOCK
                           SUB_FIELD_2RD (control_points[rcount3], point, 10);
+                          // DXF: the weights are 42 (40 are the knots)
                           if (FIELD_VALUE (segx[rcount2].is_rational))
-                            SUB_FIELD_BD (control_points[rcount3], weight, 40)
+                            SUB_FIELD_BD (control_points[rcount3], weight, 42)
                           SET_PARENT (control_points[rcount3], &FIELD_VALUE (segx[rcount2]));
                       END_REPEAT_BLOCK
                       END_REPEAT (control_points);
@@ -5051,8 +5052,9 @@ DWG_ENTITY (MPOLYGON)
                       REPEAT3 (segx[rcount2].num_control_points, control_points, Dwg_HATCH_ControlPoint)
                       REPEAT_BLOCK
                           SUB_FIELD_2RD (control_points[rcount3], point, 10);
+                          // DXF: the weights are 42 (40 are the knots)
                           if (FIELD_VALUE (segx[rcount2].is_rational))
-                            SUB_FIELD_BD (control_points[rcount3], weight, 40)
+                            SUB_FIELD_BD (control_points[rcount3], weight, 42)
                           SET_PARENT (control_points[rcount3], &FIELD_VALUE (segx[rcount2]));
                       END_REPEAT_BLOCK
                       END_REPEAT (control_points);

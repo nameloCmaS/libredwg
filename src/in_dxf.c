@@ -4132,6 +4132,22 @@ add_HATCH (Dwg_Object *restrict obj, Bit_Chain *restrict dat,
           LOG_TRACE ("HATCH.paths[%d].polyline_paths[%d].bulge = %f [BD 42]\n",
                      j, k, pair->value.d);
         }
+      else if (pair->code == 42 && !is_plpath)
+        {
+          // The weight of a rational spline edge follows its control point
+          // 10/20 as code 42 (AutoCAD, DXF reference). 40 after the knots,
+          // as LibreDWG 0.14 and older write it, is read by the code 40
+          // branch.
+          CHK_paths;
+          CHK_segs;
+          if (o->paths[j].segs[k].curve_type != 4)
+            goto unknown_HATCH;
+          CHK_control_points;
+          o->paths[j].segs[k].control_points[l].weight = pair->value.d;
+          LOG_TRACE ("HATCH.paths[%d].segs[%d].control_points[%d]."
+                     "weight = %f [BD 42]\n",
+                     j, k, l, pair->value.d);
+        }
       else if (pair->code == 97 && !is_plpath)
         {
           CHK_paths;
