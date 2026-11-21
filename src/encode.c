@@ -3061,6 +3061,21 @@ dwg_encode (Dwg_Data *restrict dwg, Bit_Chain *restrict dat)
             downconvert_DIMSTYLE (dat, obj); // so far Annotative only
         }
     }
+  /* VISUALSTYLE and SUN: their format changed in r2010, and AutoCAD 2018
+     gives them the saved-by EED in every older release (r2000-r2013) */
+  if (dwg_supports_eed (dwg)
+      && ((dwg->header.version < R_2010 && dwg->header.from_version >= R_2010)
+          || (dwg->header.version < R_2018
+              && dwg->header.from_version >= R_2018)))
+    {
+      for (i = 0; i < dwg->num_objects; i++)
+        {
+          Dwg_Object *obj = &dwg->object[i];
+          if (obj->fixedtype == DWG_TYPE_VISUALSTYLE
+              || obj->fixedtype == DWG_TYPE_SUN)
+            downconvert_saved_by_version (obj);
+        }
+    }
   if (dwg_supports_eed (dwg) && dwg->header.version <= R_2000
       && dwg->header.version >= R_2000b && dwg->header.from_version >= R_2004a
       && !(dwg->opts & DWG_OPTS_IN))
