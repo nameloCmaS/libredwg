@@ -977,6 +977,80 @@ downconvert_MLEADERSTYLE (Dwg_Object *restrict obj)
   oo->eed[idx].data = NULL;
 }
 
+/* An r2000 PROXY_OBJECT written from r2004+ carries, as AutoCAD writes it,
+   the ACAD EED 1000 "AcRTDxfName", 1000 <the class's DXF name> (e.g.
+   "AECC_TREE_NODE", on every proxy). r2004 has the "cn:" class name field
+   instead, r2007+ neither. */
+void
+downconvert_proxy_dxfname (Dwg_Object *restrict obj)
+{
+  static const char tag[] = "AcRTDxfName";
+  const unsigned len = sizeof (tag) - 1; // 11
+  Dwg_Data *dwg = obj->parent;
+  Dwg_Object_Object *oo;
+  Dwg_Object_APPID *appid;
+  Dwg_Object_PROXY_OBJECT *_obj;
+  BITCODE_H hdl;
+  BITCODE_RLL eedhdl;
+  BITCODE_BL oindex;
+  const char *dxfname;
+  unsigned int idx, nlen;
+
+  if (!obj->tio.object || !obj->tio.object->tio.PROXY_OBJECT)
+    return;
+  _obj = obj->tio.object->tio.PROXY_OBJECT;
+  if (_obj->class_id < 500
+      || _obj->class_id - 500 >= (BITCODE_BL)dwg->num_classes)
+    return;
+  dxfname = dwg->dwg_class[_obj->class_id - 500].dxfname;
+  if (!dxfname || !*dxfname)
+    return;
+  nlen = (unsigned)strlen (dxfname);
+  if (nlen > 255)
+    return;
+  oindex = obj->index;
+  hdl = dwg_find_tablehandle_silent (dwg, "ACAD", "APPID");
+  if (hdl)
+    eedhdl = hdl->handleref.value;
+  else
+    {
+      appid = dwg_add_APPID (dwg, "ACAD");
+      if (!appid)
+        return;
+      eedhdl = dwg_obj_generic_handlevalue (appid);
+    }
+  obj = &dwg->object[oindex]; // obj may have moved
+  if (obj->fixedtype != DWG_TYPE_PROXY_OBJECT || !obj->tio.object)
+    return;
+  oo = obj->tio.object;
+  if (dwg_has_eed_appid (oo, eedhdl))
+    return;
+  idx = oo->num_eed;
+  oo->num_eed += 2;
+  oo->eed = (Dwg_Eed *)realloc (oo->eed, (oo->num_eed + 1) * sizeof (Dwg_Eed));
+  if (!oo->eed)
+    {
+      oo->num_eed = 0;
+      return;
+    }
+  memset (&oo->eed[idx], 0, 3 * sizeof (Dwg_Eed));
+  dwg_add_handle (&oo->eed[idx].handle, 5, eedhdl, NULL);
+  // two TV string items: code, length, codepage, chars
+  oo->eed[idx].size = (1 + 1 + 2 + len) + (1 + 1 + 2 + nlen);
+  oo->eed[idx].data = (Dwg_Eed_Data *)calloc (EED_SZ (8 + len + 1), 1);
+  oo->eed[idx].data->code = 0;
+  oo->eed[idx].data->u.eed_0.length = len;
+  oo->eed[idx].data->u.eed_0.codepage = 30;
+  memcpy (oo->eed[idx].data->u.eed_0.string, tag, len + 1);
+  idx++;
+  oo->eed[idx].size = 0;
+  oo->eed[idx].data = (Dwg_Eed_Data *)calloc (EED_SZ (8 + nlen + 1), 1);
+  oo->eed[idx].data->code = 0;
+  oo->eed[idx].data->u.eed_0.length = nlen;
+  oo->eed[idx].data->u.eed_0.codepage = 30;
+  memcpy (oo->eed[idx].data->u.eed_0.string, dxfname, nlen + 1);
+}
+
 /* R13/R14 have the standard names upper case: BYBLOCK, BYLAYER, CONTINUOUS,
    STANDARD, *ACTIVE. AutoCAD writes them as ByBlock, ByLayer, Continuous,
    Standard and *Active since R2000, also as dictionary keys. */
