@@ -11246,9 +11246,9 @@ BL,	DXF 91
 @item version
 BL,	DXF 95
 @item maint_version
-BL
+BL,	DXF 97
 @item dwg_version
-BL
+BL,	DXF 71
 @item from_dxf
 B,	DXF 70
 @item data_numbits
