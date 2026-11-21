@@ -6017,8 +6017,16 @@ Dwg_ASSOCPARAMBASEDACTIONBODY
 BL,	DXF 90
 @item paramblock
 T,	DXF 1
+@item aap_version
+BL,	DXF 90
+@item num_array_items
+BL,	DXF 90
+@item item_classname
+T,	DXF 1
+@item array_items
+Dwg_ASSOCARRAYITEM*
 @item transmatrix
-BD*,	DXF 40
+BD*
 
 @end vtable
 @end indentedblock
@@ -6040,8 +6048,16 @@ Dwg_ASSOCPARAMBASEDACTIONBODY
 BL,	DXF 90
 @item paramblock
 T,	DXF 1
+@item aap_version
+BL,	DXF 90
+@item num_array_items
+BL,	DXF 90
+@item item_classname
+T,	DXF 1
+@item array_items
+Dwg_ASSOCARRAYITEM*
 @item transmatrix
-BD*,	DXF 40
+BD*
 @item status
 BS,	DXF 70
 @item num_items
