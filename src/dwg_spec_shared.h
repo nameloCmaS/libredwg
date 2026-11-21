@@ -1026,22 +1026,25 @@ free_3dsolid (Dwg_Object *restrict obj, Dwg_Entity_3DSOLID *restrict _obj)
 // dwg_##action##_MTEXT_private
 // clang-format off
 #define AcDbMTextObjectEmbedded_fields                       \
-  /* the common entity part (data stream) */                 \
+  /* the common entity part (data stream). Not in DXF:       \
+     AutoCAD writes none of it before the 101, and the raw   \
+     linewt (370 29) is rejected ("ATTDEF: Bad lineweight    \
+     value 29"). */                                          \
   SUB_FIELD_BB (mtext, entmode, 0);                          \
   SUB_FIELD_BL (mtext, num_reactors, 0);                     \
   SUB_FIELD_B (mtext, is_xdic_missing, 0);                   \
   SUB_FIELD_B (mtext, has_ds_data, 0);                       \
   SUB_FIELD_BSx (mtext, color.raw, 0);                       \
-  SUB_FIELD_BD (mtext, ltype_scale, 48);                     \
+  SUB_FIELD_BD (mtext, ltype_scale, 0);                      \
   SUB_FIELD_BB (mtext, ltype_flags, 0);                      \
   SUB_FIELD_BB (mtext, material_flags, 0);                   \
-  SUB_FIELD_RC (mtext, shadow_flags, 284);                   \
+  SUB_FIELD_RC (mtext, shadow_flags, 0);                     \
   SUB_FIELD_BB (mtext, plotstyle_flags, 0);                  \
   SUB_FIELD_B (mtext, has_full_visualstyle, 0);              \
   SUB_FIELD_B (mtext, has_face_visualstyle, 0);              \
   SUB_FIELD_B (mtext, has_edge_visualstyle, 0);              \
-  SUB_FIELD_BS (mtext, invisible, 60);                       \
-  SUB_FIELD_RC (mtext, linewt, 370);                         \
+  SUB_FIELD_BS (mtext, invisible, 0);                        \
+  SUB_FIELD_RC (mtext, linewt, 0);                           \
   /* the common entity handles (handle stream) */            \
   if (SUB_FIELD_VALUE (mtext, entmode) == 0)                 \
     {                                                        \
@@ -1065,7 +1068,7 @@ free_3dsolid (Dwg_Object *restrict obj, Dwg_Entity_3DSOLID *restrict _obj)
           bit_read_H (hdl_dat, &htmp); /* xdic */            \
         }                                                    \
     }                                                        \
-  SUB_FIELD_HANDLE (mtext, layer, 5, 8);                     \
+  SUB_FIELD_HANDLE (mtext, layer, 5, 0);                     \
   if (SUB_FIELD_VALUE (mtext, ltype_flags) == 3)             \
     {                                                        \
       Dwg_Handle htmp;                                       \
@@ -1172,6 +1175,10 @@ free_3dsolid (Dwg_Object *restrict obj, Dwg_Entity_3DSOLID *restrict _obj)
     {                                                        \
       FIELD_BINARY (annotative_data,                         \
                     FIELD_VALUE (annotative_data_size), 310); \
+      /* ODA: registered application H, then an unknown      \
+         BS (0), before tag/flags/lock. */                   \
+      FIELD_HANDLE (annotative_style, 5, 0);                 \
+      FIELD_BS (annotative_flag, 0);                         \
     }
 
 // FIXME
