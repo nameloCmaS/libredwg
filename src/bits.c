@@ -1238,7 +1238,9 @@ bit_read_DD (Bit_Chain *dat, double default_value)
 int
 bit_eq_DD (double value, double default_value)
 {
-  return fabs (value - default_value) < 1e-12;
+  /* bit-exact, as bit_write_DD: the compact encodings (e.g. INSERT
+     scale_flag 3 for a scale of 1.0) are for the exact default only */
+  return memcmp (&value, &default_value, sizeof (double)) == 0;
 }
 
 /** Write bit-double with default.
@@ -1248,7 +1250,10 @@ bit_write_DD (Bit_Chain *dat, double value, double default_value)
 {
   BITCODE_BB bits = 0;
 
-  if (fabs (value - default_value) < 1e-12)
+  /* bit-exact, no tolerance: e.g. a LINE end y that differs from the start
+     y in the 14th digit is not the default (AutoCAD writes those with mode
+     1) */
+  if (memcmp (&value, &default_value, sizeof (double)) == 0)
     bit_write_BB (dat, 0);
   else
     {
