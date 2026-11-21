@@ -953,8 +953,10 @@
         struct tm tm;                                                         \
         char _buf[60] = "";                                                   \
         cvt_TIMEBLL (&tm, _obj->nam);                                         \
+        /* a duration has tm_mday 0: MSVC strftime %d aborts on it */         \
         if (strEQc (#nam, "TDINDWG") || strEQc (#nam, "TDUSRTIMER"))          \
-          strftime (_buf, 60, STRFTIME_DURATION, &tm);                        \
+          snprintf (_buf, 60, FORMAT_BL " days and %02d:%02d:%02d",           \
+                    _obj->nam.days, tm.tm_hour, tm.tm_min, tm.tm_sec);        \
         else if (_obj->nam.days)                                              \
           strftime (_buf, 60, STRFTIME_DATE, &tm);                            \
         else                                                                  \
