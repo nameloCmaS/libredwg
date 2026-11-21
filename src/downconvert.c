@@ -769,6 +769,12 @@ downconvert_TABLESTYLE (Dwg_Object *restrict obj)
       _obj->horiz_cell_margin = _obj->sty.cellstyle.horiz_margin;
       _obj->vert_cell_margin = _obj->sty.cellstyle.vert_margin;
     }
+  else
+    {
+      // not overridden: AutoCAD writes its default cell margin
+      _obj->horiz_cell_margin = 0.06;
+      _obj->vert_cell_margin = 0.06;
+    }
 }
 
 // Fill a R2010 cell style from a pre-R2010 rowstyle.
