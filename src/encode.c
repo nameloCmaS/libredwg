@@ -5370,6 +5370,29 @@ fixup_invalid_tag (const Bit_Chain *restrict dat, char *restrict tag)
     }
 }
 
+/* The plain text of an R2018+ multi-line ATTRIB/ATTDEF mtext.text, for the
+   single-line text_value/default_value of an older version. The result has
+   the string type of the source (TU when IS_FROM_TU), as bit_write_T expects.
+   dwg_strip_mtext works on UTF-8 only. */
+static BITCODE_T
+strip_mtext_T (const Bit_Chain *restrict dat, const BITCODE_T restrict mtext)
+{
+  char *u8, *plain;
+  BITCODE_T result;
+  if (!IS_FROM_TU (dat))
+    return (BITCODE_T)dwg_strip_mtext ((const char *)mtext);
+  u8 = bit_convert_TU ((BITCODE_TU)mtext);
+  if (!u8)
+    return NULL;
+  plain = dwg_strip_mtext (u8);
+  free (u8);
+  if (!plain)
+    return NULL;
+  result = (BITCODE_T)bit_utf8_to_TU (plain, 0);
+  free (plain);
+  return result;
+}
+
 #define HANDLE_STREAM_ERROR_CLEANUP
 #include "dwg.spec"
 #undef HANDLE_STREAM_ERROR_CLEANUP

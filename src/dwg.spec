@@ -198,11 +198,11 @@ DWG_ENTITY (ATTRIB)
   // R2018+ multi-line ATTRIB stores its text in mtext.text. When
   // downconverting to an older version, substitute it into text_value.
   if (dat->version < R_2018
-      && (!FIELD_VALUE (text_value) || !*FIELD_VALUE (text_value))
-      && FIELD_VALUE (mtext).text && *FIELD_VALUE (mtext).text)
+      && bit_empty_T (dat, FIELD_VALUE (text_value))
+      && !bit_empty_T (dat, FIELD_VALUE (mtext).text))
     {
       free (FIELD_VALUE (text_value));
-      FIELD_VALUE (text_value) = dwg_strip_mtext (FIELD_VALUE (mtext).text);
+      FIELD_VALUE (text_value) = strip_mtext_T (dat, FIELD_VALUE (mtext).text);
     }
 #endif
   PRE (R_13b1)
@@ -408,12 +408,12 @@ DWG_ENTITY (ATTDEF)
   // R2018+ multi-line ATTDEF stores its text in mtext.text. When
   // downconverting to an older version, substitute it into default_value.
   if (dat->version < R_2018
-      && (!FIELD_VALUE (default_value) || !*FIELD_VALUE (default_value))
-      && FIELD_VALUE (mtext).text && *FIELD_VALUE (mtext).text)
+      && bit_empty_T (dat, FIELD_VALUE (default_value))
+      && !bit_empty_T (dat, FIELD_VALUE (mtext).text))
     {
       free (FIELD_VALUE (default_value));
       FIELD_VALUE (default_value)
-          = dwg_strip_mtext (FIELD_VALUE (mtext).text);
+          = strip_mtext_T (dat, FIELD_VALUE (mtext).text);
     }
 #endif
   PRE (R_13b1)
