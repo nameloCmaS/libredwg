@@ -8026,7 +8026,8 @@ typedef struct _dwg_object_MTEXTATTRIBUTEOBJECTCONTEXTDATA
   TEXTOBJECTCONTEXTDATA_fields;
   // MTEXTATTR
   BITCODE_B enable_context;
-  Dwg_Object_SCALE context;
+  // Embedded Object, if enable_context
+  Dwg_Object_MTEXTOBJECTCONTEXTDATA context; /*!< DXF 101 */
 } Dwg_Object_MTEXTATTRIBUTEOBJECTCONTEXTDATA;
 
 typedef struct _dwg_object_MLEADEROBJECTCONTEXTDATA

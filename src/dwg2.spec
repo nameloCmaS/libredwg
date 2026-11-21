@@ -4101,25 +4101,96 @@ DWG_ENTITY_END
 DWG_OBJECT (MTEXTATTRIBUTEOBJECTCONTEXTDATA)
   AcDbAnnotScaleObjectContextData_fields;
   AcDbTextObjectContextData_fields;
+  // no AcDbMTextAttributeObjectContextData marker in AutoCAD's DXF;
+  // AutoCAD 2027 rejects one
+#ifndef IS_DXF
   SUBCLASS (AcDbMTextAttributeObjectContextData);
+#endif
   FIELD_B (enable_context, 290);
-  // if scale is not 1:1
+  // a multi-line attribute: an embedded MTEXT context follows, as in
+  // AutoCAD's DXF (101 "Embedded Object") and DWG (its R2004 and R2013
+  // records), not an AcDbScale.
   if (FIELD_VALUE (enable_context))
     {
-      /*
-      DECODER {
-        dwg_add_object (dwg);
-        _obj->context = &dwg->object[dwg->num_objects - 1];
-        dwg_setup_SCALE (_obj->context);
-      } */
       DXF { VALUE_TFF ( "Embedded Object", 101 ); }
-      //CALL_SUBCLASS (_obj->context, SCALE, AcDbScale);
-      SUBCLASS (AcDbScale);
-      SUB_FIELD_BS (context, flag, 70); // always 0
-      SUB_FIELD_T (context, name, 300);
-      SUB_FIELD_BD (context, paper_units, 140);
-      SUB_FIELD_BD (context, drawing_units, 141);
-      SUB_FIELD_B (context, is_unit_scale, 290);
+      // the embedded object's common data: BL num_reactors (0),
+      // B is_xdic_missing (1), r2013+ B has_ds_data (0). "101" in AutoCAD's
+      // R2004 records, "1010" in its R2013 ones.
+#if defined(IS_DECODER)
+      {
+        const BITCODE_BL nr = bit_read_BL (dat);
+        const BITCODE_B xm = bit_read_B (dat);
+        LOG_TRACE ("context.num_reactors: " FORMAT_BL ", is_xdic_missing: %d"
+                   " [BL B]\n", nr, (int)xm);
+        SINCE (R_2013b)
+        {
+          const BITCODE_B ds = bit_read_B (dat);
+          LOG_TRACE ("context.has_ds_data: %d [B]\n", (int)ds);
+        }
+        if (nr || !xm)
+          {
+            LOG_ERROR ("embedded context with reactors or an xdictionary");
+            return DWG_ERR_VALUEOUTOFBOUNDS;
+          }
+      }
+#elif defined(IS_ENCODER)
+      bit_write_BL (dat, 0);
+      bit_write_B (dat, 1);
+      SINCE (R_2013b) { bit_write_B (dat, 0); }
+#endif
+      SUBCLASS (AcDbObjectContextData);
+      ENCODER {
+        if (dat->version < R_2010b && _obj->context.class_version > 3)
+          _obj->context.class_version = 3;
+      }
+      SUB_FIELD_BS (context, class_version, 70);
+      SUB_FIELD_B (context, is_default, 290);
+      SUBCLASS (AcDbAnnotScaleObjectContextData);
+      // the embedded object's own owner handle, a null 4.0.0 in AutoCAD's
+      // records, comes before its scale handle
+#if defined(IS_DECODER)
+      {
+        Dwg_Handle own = { 0, 0, 0, 0 };
+        if (bit_read_H (hdl_dat, &own))
+          return DWG_ERR_INVALIDHANDLE;
+        LOG_TRACE ("context.ownerhandle: " FORMAT_H " [H 0]\n", ARGS_H (own));
+      }
+#elif defined(IS_ENCODER)
+      {
+        Dwg_Handle own = { 4, 0, 0, 0 };
+        bit_write_H (hdl_dat, &own);
+        LOG_TRACE ("context.ownerhandle: 4.0.0 [H 0]\n");
+      }
+#endif
+      SUB_FIELD_HANDLE (context, scale, 2, 340);
+      SUB_FIELD_BL (context, attachment, 70);
+      SUB_FIELD_3BD (context, x_axis_dir, 10);
+      SUB_FIELD_3BD (context, ins_pt, 11);
+      SUB_FIELD_BD (context, rect_width, 40);
+      SUB_FIELD_BD (context, rect_height, 41);
+      SUB_FIELD_BD (context, extents_width, 42);
+      SUB_FIELD_BD (context, extents_height, 43);
+      SUB_FIELD_BL (context, column_type, 71);
+      if (_obj->context.column_type > 2)
+        {
+          LOG_ERROR ("Invalid context.column_type %u",
+                     (unsigned)_obj->context.column_type);
+          _obj->context.column_type = 0;
+          return DWG_ERR_VALUEOUTOFBOUNDS;
+        }
+      if (_obj->context.column_type)
+        {
+          SUB_FIELD_BL (context, num_column_heights, 72);
+          SUB_FIELD_BD (context, column_width, 44);
+          SUB_FIELD_BD (context, gutter, 45);
+          SUB_FIELD_B (context, auto_height, 73);
+          SUB_FIELD_B (context, flow_reversed, 74);
+          if (!_obj->context.auto_height && _obj->context.column_type == 2)
+            {
+              SUB_FIELD_VECTOR (context, column_heights, BD,
+                                num_column_heights, 46);
+            }
+        }
     }
   START_OBJECT_HANDLE_STREAM;
 DWG_OBJECT_END
