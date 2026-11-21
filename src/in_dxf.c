@@ -8855,6 +8855,86 @@ add_dictionary_itemhandles (Dwg_Object *restrict obj, Dxf_Pair *restrict pair,
   _obj->numitems = num + 1;
 }
 
+/* The embedded object of an MTEXT with columns (r2018), after the 101
+   "Embedded Object" marker: 70 default_flag, then the redundant 10 x_axis_dir,
+   11 ins_pt (as AutoCAD writes them), 40 rect_width and 41 rect_height,
+   which are skipped as copies of the MTEXT's own fields, then 42/43 extents
+   and the columns 71-74, 44, 45, 46. Not for the generic lookup, which would
+   overwrite ins_pt, text_height, attachment, flow_dir and linespace_factor.
+   Returns 0 for a code it does not know. */
+static int
+add_MTEXT_embedded (Dwg_Object *restrict obj, Dxf_Pair *restrict pair,
+                    BITCODE_BL *restrict column_idx)
+{
+  Dwg_Entity_MTEXT *o = obj->tio.entity->tio.MTEXT;
+  o->is_not_annotative = 1;
+  switch (pair->code)
+    {
+    case 70:
+      o->default_flag = pair->value.i ? 1 : 0;
+      break;
+    case 10:
+    case 20:
+    case 30:
+    case 11:
+    case 21:
+    case 31:
+    case 40:
+    case 41:
+      break; // redundant copies
+    case 42:
+      o->extents_width = pair->value.d;
+      break;
+    case 43:
+      o->extents_height = pair->value.d;
+      break;
+    case 71:
+      o->column_type = (BITCODE_BS)pair->value.i;
+      break;
+    case 72:
+      if (o->column_type == 1)
+        o->numfragments = pair->value.u;
+      else if (!o->column_heights && pair->value.u < 10000)
+        o->num_column_heights = pair->value.u;
+      break;
+    case 44:
+      o->column_width = pair->value.d;
+      break;
+    case 45:
+      o->gutter = pair->value.d;
+      break;
+    case 73:
+      o->auto_height = pair->value.i ? 1 : 0;
+      break;
+    case 74:
+      o->flow_reversed = pair->value.i ? 1 : 0;
+      break;
+    case 46:
+      if (!o->num_column_heights)
+        o->num_column_heights = 1;
+      if (!o->column_heights)
+        {
+          o->column_heights = (BITCODE_BD *)xcalloc (o->num_column_heights,
+                                                     sizeof (BITCODE_BD));
+          if (!o->column_heights)
+            {
+              o->num_column_heights = 0;
+              return 0;
+            }
+        }
+      if (*column_idx >= o->num_column_heights)
+        return 0;
+      o->column_heights[*column_idx] = pair->value.d;
+      LOG_TRACE ("MTEXT.column_heights[%u] = %f [BD* 46]\n",
+                 (unsigned)*column_idx, pair->value.d);
+      (*column_idx)++;
+      break;
+    default:
+      return 0;
+    }
+  return 1;
+}
+
 /* The embedded MTEXT of a multi-line ATTDEF/ATTRIB (r2018), after the 101
    "Embedded Object" marker. The MTEXT fields come first, up to the background
    fill flag 90; the rest (annotative scale and columns) is not read, but it
@@ -12051,6 +12131,7 @@ static __nonnull ((1, 3, 4)) Dxf_Pair *new_object (
   int in_reactors = 0;
   int in_blkrefs = 0;
   int in_embedobj = 0;
+  BITCODE_BL mtext_column_idx = 0; // MTEXT embedded column_heights[46]
   int reused = 0;
   int is_entity = is_dwg_entity (name) || strEQc (name, "DIMENSION");
   // BITCODE_BL rcount1, rcount2, rcount3, vcount;
@@ -12400,6 +12481,10 @@ static __nonnull ((1, 3, 4)) Dxf_Pair *new_object (
         }
       // The embedded MTEXT of a multi-line ATTDEF/ATTRIB. Not the generic
       // fields.
+      if (in_embedobj && obj->fixedtype == DWG_TYPE_MTEXT && pair->code != 0
+          && pair->code < 1000
+          && add_MTEXT_embedded (obj, pair, &mtext_column_idx))
+        goto next_pair;
       if (in_embedobj
           && (obj->fixedtype == DWG_TYPE_ATTRIB
               || obj->fixedtype == DWG_TYPE_ATTDEF)
@@ -14328,7 +14413,8 @@ static __nonnull ((1, 3, 4)) Dxf_Pair *new_object (
               else
                 goto search_field;
             }
-          else if (obj->fixedtype == DWG_TYPE_MTEXT && pair->code == 46)
+          else if (obj->fixedtype == DWG_TYPE_MTEXT && pair->code == 46
+                   && in_embedobj)
             {
               Dwg_Entity_MTEXT *o = obj->tio.entity->tio.MTEXT;
               if (!o->num_column_heights)
