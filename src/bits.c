@@ -1111,7 +1111,10 @@ bit_write_UMC (Bit_Chain *dat, BITCODE_UMC val)
       byte[i] |= 0x80;
       mask = mask << 7;
     }
-  for (i = 0; i < 4; i++)
+  // byte[] holds the 7-bit groups, most significant first. Skip the leading
+  // groups that are 0, but never the last one, so a value takes only the
+  // bytes it needs (1 is the single byte 01), as AutoCAD writes it.
+  for (i = 0; i < MAX_BYTE_UMC - 1; i++)
     if (byte[i] & 0x7f)
       break;
 
