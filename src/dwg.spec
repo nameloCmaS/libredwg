@@ -2282,7 +2282,9 @@ DWG_ENTITY (VIEWPORT)
     FIELD_3RD (center, 10);
     FIELD_RD (width, 40);
     FIELD_RD (height, 41);
+#ifndef IS_DXF // VIEWPORT's DXF block writes 68 and 69
     FIELD_RS (id, 69);
+#endif
   }
   LATER_VERSIONS {
     FIELD_3BD (center, 10);
@@ -2311,12 +2313,66 @@ DWG_ENTITY (VIEWPORT)
       vp_block = dwg->header_vars.BLOCK_RECORD_MSPACE->obj;
     if (!vp_block || dxf_block_is_layout (dwg, vp_block))
       {
+        // The overall viewport of the layout is id 1, the others 2, 3, ...
+        // (AUDIT reports a detail viewport with id 1). AutoCAD numbers them
+        // in the order of the layout's viewports list (r2004+), whose first
+        // entry is the overall viewport. Without the list, the layout's
+        // active_viewport is id 1 and the rest follow in written order.
+        int has_overall = 0, is_overall = 0;
+        BITCODE_BL list_id = 0, list_len = 0;
+        if (vp_block && vp_block->fixedtype == DWG_TYPE_BLOCK_HEADER)
+          {
+            Dwg_Object_BLOCK_HEADER *_bh
+                = vp_block->tio.object->tio.BLOCK_HEADER;
+            Dwg_Object *_lo = _bh && _bh->layout
+                                  ? dwg_ref_object (dwg, _bh->layout)
+                                  : NULL;
+            Dwg_Object_LAYOUT *_layout
+                = _lo && _lo->fixedtype == DWG_TYPE_LAYOUT
+                      ? _lo->tio.object->tio.LAYOUT
+                      : NULL;
+            if (_layout && _layout->num_viewports && _layout->viewports
+                && _layout->num_viewports < 10000)
+              {
+                BITCODE_BL _vi;
+                list_len = _layout->num_viewports;
+                for (_vi = 0; _vi < list_len; _vi++)
+                  if (_layout->viewports[_vi]
+                      && _layout->viewports[_vi]->absolute_ref
+                             == obj->handle.value)
+                    {
+                      list_id = _vi + 1;
+                      break;
+                    }
+              }
+            else if (_layout && _layout->active_viewport
+                     && _layout->active_viewport->absolute_ref)
+              {
+                has_overall = 1;
+                is_overall = _layout->active_viewport->absolute_ref
+                             == obj->handle.value;
+              }
+          }
         if (vp_block != dwg->last_viewport_block)
-          dwg->last_viewport_id = 0;
+          dwg->last_viewport_id
+              = list_len ? (BITCODE_RS)list_len : has_overall ? 1 : 0;
         dwg->last_viewport_block = vp_block;
-        dwg->last_viewport_id++;
-        FIELD_VALUE (on_off) = dwg->last_viewport_id;
-        FIELD_VALUE (id) = dwg->last_viewport_id;
+        if (list_id)
+          {
+            FIELD_VALUE (on_off) = (BITCODE_RS)list_id;
+            FIELD_VALUE (id) = (BITCODE_RS)list_id;
+          }
+        else if (is_overall)
+          {
+            FIELD_VALUE (on_off) = 1;
+            FIELD_VALUE (id) = 1;
+          }
+        else
+          {
+            dwg->last_viewport_id++;
+            FIELD_VALUE (on_off) = dwg->last_viewport_id;
+            FIELD_VALUE (id) = dwg->last_viewport_id;
+          }
       }
     else
       {
@@ -2400,7 +2456,7 @@ DWG_ENTITY (VIEWPORT)
     }
   }
   DXF {
-    FIELD_HANDLE (visualstyle, 5, 348);
+    FIELD_HANDLE0 (visualstyle, 5, 348);
   }
 
   SINCE (R_2007a) {
@@ -2417,24 +2473,24 @@ DWG_ENTITY (VIEWPORT)
   }
   VERSIONS (R_2000b, R_2002) {
     HANDLE_VECTOR (frozen_layers, num_frozen_layers, 5, 341); // hard pointer
-    FIELD_HANDLE (clip_boundary, 5, 340);
+    FIELD_HANDLE0 (clip_boundary, 5, 340);
   }
   SINCE (R_2004a) {
     HANDLE_VECTOR (frozen_layers, num_frozen_layers, 4, 331); // soft pointer
-    FIELD_HANDLE (clip_boundary, 5, 340);
+    FIELD_HANDLE0 (clip_boundary, 5, 340);
   }
   VERSIONS (R_2000b, R_2002) {
     FIELD_HANDLE (vport_entity_header, 5, 0);  // => VX
   }
   SINCE (R_2000b) {
-    FIELD_HANDLE (named_ucs, 5, 345);
-    FIELD_HANDLE (base_ucs, 5, 346);
+    FIELD_HANDLE0 (named_ucs, 5, 345);
+    FIELD_HANDLE0 (base_ucs, 5, 346);
   }
   SINCE (R_2007a) {
-    FIELD_HANDLE (background, 4, 332);
+    FIELD_HANDLE0 (background, 4, 332);
     FIELD_HANDLE (visualstyle, 5, 0);
-    FIELD_HANDLE (shadeplot, 4, 333);
-    FIELD_HANDLE (sun, 3, 361);
+    FIELD_HANDLE0 (shadeplot, 4, 333);
+    FIELD_HANDLE0 (sun, 3, 361);
   }
 
 DWG_ENTITY_END
