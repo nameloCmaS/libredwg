@@ -31620,14 +31620,48 @@ static int test_ASSOCARRAYACTIONBODY (const Dwg_Object *obj)
         fail ("ASSOCARRAYACTIONBODY.parent [struct _dwg_object_object*]");
   }
   {
-    BITCODE_BD* transmatrix;
+    BITCODE_BL aap_version;
+    if (dwg_dynapi_entity_value (assocarrayactionbody, "ASSOCARRAYACTIONBODY", "aap_version", &aap_version, NULL)
+        && aap_version == assocarrayactionbody->aap_version)
+      pass ();
+    else
+      fail ("ASSOCARRAYACTIONBODY.aap_version [BL] %u != %u", assocarrayactionbody->aap_version, aap_version);
+  }
+  {
+    BITCODE_BL num_array_items;
+    if (dwg_dynapi_entity_value (assocarrayactionbody, "ASSOCARRAYACTIONBODY", "num_array_items", &num_array_items, NULL)
+        && num_array_items == assocarrayactionbody->num_array_items)
+      pass ();
+    else
+      fail ("ASSOCARRAYACTIONBODY.num_array_items [BL] %u != %u", assocarrayactionbody->num_array_items, num_array_items);
+  }
+  {
+    BITCODE_T item_classname;
+    if (dwg_dynapi_entity_value (assocarrayactionbody, "ASSOCARRAYACTIONBODY", "item_classname", &item_classname, NULL)
+        && item_classname
+           ? strEQ ((char *)item_classname, (char *)assocarrayactionbody->item_classname)
+           : !assocarrayactionbody->item_classname)
+      pass ();
+    else
+      fail ("ASSOCARRAYACTIONBODY.item_classname [T] '%s' <> '%s'", item_classname, assocarrayactionbody->item_classname);
+  }
+  {
+    Dwg_ASSOCARRAYITEM* array_items;
     BITCODE_BL count = 0;
-    if (dwg_dynapi_entity_value (assocarrayactionbody, "ASSOCARRAYACTIONBODY", "num_transmatrix", &count, NULL)
-        && dwg_dynapi_entity_value (assocarrayactionbody, "ASSOCARRAYACTIONBODY", "transmatrix", &transmatrix, NULL)
+    if (dwg_dynapi_entity_value (assocarrayactionbody, "ASSOCARRAYACTIONBODY", "num_array_items", &count, NULL)
+        && dwg_dynapi_entity_value (assocarrayactionbody, "ASSOCARRAYACTIONBODY", "array_items", &array_items, NULL)
+        && array_items == assocarrayactionbody->array_items)
+      pass ();
+    else
+      fail ("ASSOCARRAYACTIONBODY.array_items [Dwg_ASSOCARRAYITEM*] * %u num_array_items", count);
+  }
+  {
+    BITCODE_BD* transmatrix;
+    if (dwg_dynapi_entity_value (assocarrayactionbody, "ASSOCARRAYACTIONBODY", "transmatrix", &transmatrix, NULL)
         && transmatrix == assocarrayactionbody->transmatrix)
       pass ();
     else
-      fail ("ASSOCARRAYACTIONBODY.transmatrix [BD*] * %u num_transmatrix", count);
+      fail ("ASSOCARRAYACTIONBODY.transmatrix [BD*]");
   }
   if (failed && (is_class_unstable ("ASSOCARRAYACTIONBODY") || is_class_debugging ("ASSOCARRAYACTIONBODY")))
     {
@@ -31744,14 +31778,48 @@ static int test_ASSOCARRAYMODIFYACTIONBODY (const Dwg_Object *obj)
     assocarraymodifyactionbody->status--;
   }
   {
-    BITCODE_BD* transmatrix;
+    BITCODE_BL aap_version;
+    if (dwg_dynapi_entity_value (assocarraymodifyactionbody, "ASSOCARRAYMODIFYACTIONBODY", "aap_version", &aap_version, NULL)
+        && aap_version == assocarraymodifyactionbody->aap_version)
+      pass ();
+    else
+      fail ("ASSOCARRAYMODIFYACTIONBODY.aap_version [BL] %u != %u", assocarraymodifyactionbody->aap_version, aap_version);
+  }
+  {
+    BITCODE_BL num_array_items;
+    if (dwg_dynapi_entity_value (assocarraymodifyactionbody, "ASSOCARRAYMODIFYACTIONBODY", "num_array_items", &num_array_items, NULL)
+        && num_array_items == assocarraymodifyactionbody->num_array_items)
+      pass ();
+    else
+      fail ("ASSOCARRAYMODIFYACTIONBODY.num_array_items [BL] %u != %u", assocarraymodifyactionbody->num_array_items, num_array_items);
+  }
+  {
+    BITCODE_T item_classname;
+    if (dwg_dynapi_entity_value (assocarraymodifyactionbody, "ASSOCARRAYMODIFYACTIONBODY", "item_classname", &item_classname, NULL)
+        && item_classname
+           ? strEQ ((char *)item_classname, (char *)assocarraymodifyactionbody->item_classname)
+           : !assocarraymodifyactionbody->item_classname)
+      pass ();
+    else
+      fail ("ASSOCARRAYMODIFYACTIONBODY.item_classname [T] '%s' <> '%s'", item_classname, assocarraymodifyactionbody->item_classname);
+  }
+  {
+    Dwg_ASSOCARRAYITEM* array_items;
     BITCODE_BL count = 0;
-    if (dwg_dynapi_entity_value (assocarraymodifyactionbody, "ASSOCARRAYMODIFYACTIONBODY", "num_transmatrix", &count, NULL)
-        && dwg_dynapi_entity_value (assocarraymodifyactionbody, "ASSOCARRAYMODIFYACTIONBODY", "transmatrix", &transmatrix, NULL)
+    if (dwg_dynapi_entity_value (assocarraymodifyactionbody, "ASSOCARRAYMODIFYACTIONBODY", "num_array_items", &count, NULL)
+        && dwg_dynapi_entity_value (assocarraymodifyactionbody, "ASSOCARRAYMODIFYACTIONBODY", "array_items", &array_items, NULL)
+        && array_items == assocarraymodifyactionbody->array_items)
+      pass ();
+    else
+      fail ("ASSOCARRAYMODIFYACTIONBODY.array_items [Dwg_ASSOCARRAYITEM*] * %u num_array_items", count);
+  }
+  {
+    BITCODE_BD* transmatrix;
+    if (dwg_dynapi_entity_value (assocarraymodifyactionbody, "ASSOCARRAYMODIFYACTIONBODY", "transmatrix", &transmatrix, NULL)
         && transmatrix == assocarraymodifyactionbody->transmatrix)
       pass ();
     else
-      fail ("ASSOCARRAYMODIFYACTIONBODY.transmatrix [BD*] * %u num_transmatrix", count);
+      fail ("ASSOCARRAYMODIFYACTIONBODY.transmatrix [BD*]");
   }
   if (failed && (is_class_unstable ("ASSOCARRAYMODIFYACTIONBODY") || is_class_debugging ("ASSOCARRAYMODIFYACTIONBODY")))
     {

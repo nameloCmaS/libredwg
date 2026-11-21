@@ -6366,11 +6366,36 @@ DWG_OBJECT_END
   SUBCLASS (AcDbAssocArrayActionBody);                      \
   FIELD_BL (aaab_version, 90);                              \
   FIELD_T (paramblock, 1);                                  \
-  FIELD_VECTOR_N (transmatrix, BD, 16, 40)
+  /* The parameters object of class paramblock, embedded: version,  \
+     items. The transmatrix follows the items (an identity matrix   \
+     in the records seen), not paramblock. AutoCAD's DXF has no     \
+     transmatrix. */                                                \
+  FIELD_BL (aap_version, 90);                               \
+  FIELD_BL (num_array_items, 90);                           \
+  FIELD_T (item_classname, 1);                              \
+  REPEAT (num_array_items, array_items, Dwg_ASSOCARRAYITEM) \
+  REPEAT_BLOCK                                              \
+      AcDbAssocArrayItem_fields (array_items[rcount1]);     \
+      SET_PARENT (array_items[rcount1],                     \
+                  (Dwg_Object_ASSOCARRAYPARAMETERS *)_obj); \
+  END_REPEAT_BLOCK                                          \
+  END_REPEAT (array_items);                                 \
+  ENCODER {                                                 \
+    if (!_obj->transmatrix)                                 \
+      {                                                     \
+        _obj->transmatrix                                   \
+            = (BITCODE_BD *)calloc (16, sizeof (BITCODE_BD)); \
+        if (_obj->transmatrix)                              \
+          for (vcount = 0; vcount < 16; vcount += 5)        \
+            _obj->transmatrix[vcount] = 1.0;                \
+      }                                                     \
+  }                                                         \
+  DXF { }                                                   \
+  else { FIELD_VECTOR_N (transmatrix, BD, 16, 40); }
 
 #define AcDbAssocArrayItem_fields(item)                          \
   SUB_FIELD_BL (item, class_version, 90);                        \
-  SUB_FIELD_VECTOR_INL (items[rcount1], itemloc, BL, 3, 90);     \
+  SUB_FIELD_VECTOR_INL (item, itemloc, BL, 3, 90);               \
   SUB_FIELD_BLx (item, flags, 90);                               \
   /* TODO compare against default transmatrix */                 \
   if (FIELD_VALUE (item.is_default_transmatrix))                 \
@@ -6386,8 +6411,9 @@ DWG_OBJECT_END
     {                                                            \
       SUB_FIELD_VECTOR_N (item, rel_transform, BD, 16, 40);      \
     }                                                            \
-  if (FIELD_VALUE (item.has_h1))                                 \
-    SUB_FIELD_HANDLE (item, h1, 4, 330);                         \
+  /* always there: one soft pointer per item in AutoCAD's        \
+     R2010 and R2018 files, whatever has_h1 says */              \
+  SUB_FIELD_HANDLE (item, h1, 4, 330);                           \
   if (FIELD_VALUE (item.flags) & 0x10)                           \
     SUB_FIELD_HANDLE (item, h2, 4, 330)
 
