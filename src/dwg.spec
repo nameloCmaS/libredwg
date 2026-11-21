@@ -5811,10 +5811,11 @@ DWG_ENTITY (PROXY_ENTITY)
   SINCE (R_2000b) {
     FIELD_BL (class_id, 91); // R2000+, ODA 20.4.90
   }
+  // as PROXY_OBJECT: version | maint_version << 16 (ODA 20.4.90), not << 8
   PRE (R_2018) {
     FIELD_BLx (version, 95);
-    FIELD_VALUE (maint_version) = FIELD_VALUE(version) >> 8;
-    FIELD_VALUE (dwg_version) = FIELD_VALUE(version) & 0xff;
+    FIELD_VALUE (maint_version) = FIELD_VALUE (version) >> 16;
+    FIELD_VALUE (dwg_version) = FIELD_VALUE (version) & 0xffff;
     LOG_TRACE ("> maint_version: %x\n", _obj->maint_version);
     LOG_TRACE ("> dwg_version: %x\n", _obj->dwg_version);
   }
@@ -5822,14 +5823,15 @@ DWG_ENTITY (PROXY_ENTITY)
   // from DXF or an older version only DXF 95 is set
   if (!FIELD_VALUE (dwg_version) && !FIELD_VALUE (maint_version))
     {
-      FIELD_VALUE (maint_version) = FIELD_VALUE (version) >> 8;
-      FIELD_VALUE (dwg_version) = FIELD_VALUE (version) & 0xff;
+      FIELD_VALUE (maint_version) = FIELD_VALUE (version) >> 16;
+      FIELD_VALUE (dwg_version) = FIELD_VALUE (version) & 0xffff;
     }
 #endif
   SINCE (R_2018) {
     FIELD_BLx (dwg_version, 0);
     FIELD_BLx (maint_version, 0);
-    FIELD_VALUE (version) = (FIELD_VALUE(maint_version) << 8) + FIELD_VALUE(dwg_version);
+    FIELD_VALUE (version)
+        = (FIELD_VALUE (maint_version) << 16) | FIELD_VALUE (dwg_version);
     DXF {
       FIELD_BLx (version, 95);
     }
@@ -5999,20 +6001,61 @@ DWG_OBJECT (PROXY_OBJECT)
   SINCE (R_2000b) {
     FIELD_BL (class_id, 91); // R2000+, ODA 20.4.90
   }
+  // AC1018 only: a TV "cn:" + the class's C++ name follows class_id
+  // ("cn:AeccDbTreeNode", with the NUL in the length), in every proxy of
+  // AutoCAD's R2004 files. Not in its R2000 files, not in r2007+ (the
+  // version follows class_id there). Not in ODA 20.4.90. Derived from the
+  // class when writing, so it is not stored.
+  VERSIONS (R_2004a, R_2004)
+  {
+#if defined(IS_DECODER)
+    {
+      BITCODE_TV cn = bit_read_TV (dat);
+      LOG_TRACE ("classname: \"%s\" [TV 0]\n", cn ? (char *)cn : "");
+      free (cn);
+    }
+#elif defined(IS_ENCODER)
+    {
+      char cn[512];
+      char *cpp = NULL;
+      if (_obj->class_id >= 500
+          && _obj->class_id - 500 < (BITCODE_BL)dwg->num_classes)
+        {
+          const Dwg_Class *klass = &dwg->dwg_class[_obj->class_id - 500];
+          if (klass->cppname)
+            cpp = dwg->header.from_version >= R_2007
+                      ? bit_convert_TU ((BITCODE_TU)klass->cppname)
+                      : strdup (klass->cppname);
+        }
+      snprintf (cn, sizeof (cn), "cn:%s", cpp ? cpp : "");
+      free (cpp);
+      bit_write_TV (dat, (BITCODE_TV)cn);
+      LOG_TRACE ("classname: \"%s\" [TV 0]\n", cn);
+    }
+#endif
+  }
+  // ODA 20.4.90: before R2018 "a bitwise OR of the version and the
+  // maintenance version, shifted 16 bits to the left". AutoCAD writes e.g.
+  // 95 = 14811165 = 226 << 16 | 29 before R2018, and 71 = 29 and 97 = 226 in
+  // its R2018 DXF. AUDIT reports a proxy with the version shifted by 8
+  // (0xE21D) as ePermanentlyErased.
   PRE (R_2018) {
     FIELD_BLx (version, 95);
-    FIELD_VALUE (maint_version) = FIELD_VALUE(version) >> 8;
-    FIELD_VALUE (dwg_version) = FIELD_VALUE(version) & 0xff;
+    FIELD_VALUE (maint_version) = FIELD_VALUE (version) >> 16;
+    FIELD_VALUE (dwg_version) = FIELD_VALUE (version) & 0xffff;
     LOG_TRACE ("> maint_version: %x\n", _obj->maint_version);
     LOG_TRACE ("> dwg_version: %x\n", _obj->dwg_version);
   }
   SINCE (R_2018) {
-    FIELD_BLx (dwg_version, 0);
-    FIELD_BLx (maint_version, 0);
-    FIELD_VALUE (version) = (FIELD_VALUE(maint_version) << 8) + FIELD_VALUE(dwg_version);
     DXF {
-      FIELD_BLx (version, 95);
+      FIELD_BL (dwg_version, 71);
+      FIELD_BL (maint_version, 97);
+    } else {
+      FIELD_BLx (dwg_version, 0);
+      FIELD_BLx (maint_version, 0);
     }
+    FIELD_VALUE (version)
+        = (FIELD_VALUE (maint_version) << 16) | FIELD_VALUE (dwg_version);
   }
   SINCE (R_2000b)
   {
@@ -6055,7 +6098,13 @@ DWG_OBJECT (PROXY_OBJECT)
   }
   ENCODER {
     LOG_TRACE ("data_numbits: " FORMAT_BL " [ 93]\n", _obj->data_numbits);
-    bit_write_bits (dat, _obj->data, _obj->data_numbits);
+#ifdef IS_ENCODER // encode.c's static function
+    if (dat->version < R_2007 && dwg->header.from_version >= R_2007
+        && !(dwg->opts & DWG_OPTS_INDXF))
+      encode_proxy_data_pre_r2007 (dat, _obj->data, _obj->data_numbits);
+    else
+#endif
+      bit_write_bits (dat, _obj->data, _obj->data_numbits);
   }
   DXF_OR_PRINT {
     unsigned bytes = _obj->data_numbits / 8;
@@ -6070,9 +6119,11 @@ DWG_OBJECT (PROXY_OBJECT)
 #ifdef IS_ENCODER
   {
     // the raw data of a r2007+ DWG already holds the string stream and its
-    // footer, also via JSON. Not so from DXF or across versions.
+    // footer, also via JSON, and for any r2007+ output: AutoCAD's R2013 and
+    // R2018 records of the same proxy have the same data, with no second
+    // footer. Not so from DXF or for pre-r2007 output.
     Bit_Chain *_ostr = str_dat;
-    str_dat = (dat->version >= R_2007 && dwg->header.from_version == dat->version
+    str_dat = (dat->version >= R_2007 && dwg->header.from_version >= R_2007
                && !(dwg->opts & DWG_OPTS_INDXF)) ? dat : _ostr;
     START_OBJECT_HANDLE_STREAM;
   }

@@ -5330,6 +5330,79 @@ downconvert_assoc_pab (Dwg_Data *restrict dwg)
     }
 }
 
+/* r2007+ PROXY_OBJECT data for r2000/r2004 output. The raw r2007+ data
+   holds the object's string stream and its footer, and the first string is
+   the "cn:<C++ class name>" T that follows class_id. AutoCAD's pre-r2007
+   records keep the rest as is: the data bits, the proxy's own strings (still
+   UTF-16) and a footer with the smaller size (in every proxy of AutoCAD's
+   R2000 and R2004 files). The class name goes to a TV in r2004. Falls back to the
+   unchanged data when the footer does not parse. */
+static void
+encode_proxy_data_pre_r2007 (Bit_Chain *restrict dat,
+                             const unsigned char *restrict data,
+                             const BITCODE_BL numbits)
+{
+  Bit_Chain src = { 0 };
+  size_t sizepos, strstart, first_end, newsize, i;
+  BITCODE_RS lo, hi = 0;
+  size_t size;
+  BITCODE_BS len;
+  if (!data || numbits < 18)
+    goto asis;
+  src.chain = (unsigned char *)data;
+  src.size = ((size_t)numbits + 7) / 8;
+  src.version = src.from_version = R_2007;
+  bit_set_position (&src, numbits - 1);
+  if (!bit_read_B (&src))
+    goto asis;
+  sizepos = numbits - 17;
+  bit_set_position (&src, sizepos);
+  lo = bit_read_RS (&src);
+  size = lo;
+  if (lo & 0x8000)
+    {
+      if (numbits < 34)
+        goto asis;
+      sizepos = numbits - 33;
+      bit_set_position (&src, sizepos);
+      hi = bit_read_RS (&src);
+      size = (size_t)(lo & 0x7fff) | ((size_t)hi << 15);
+    }
+  if (size > sizepos)
+    goto asis;
+  strstart = sizepos - size;
+  bit_set_position (&src, strstart);
+  len = bit_read_BS (&src);
+  first_end = bit_position (&src) + 16 * (size_t)len;
+  if (first_end > sizepos)
+    goto asis;
+  newsize = size - (first_end - strstart);
+  LOG_TRACE ("proxy data: %u bits, strings %u, without the class name %u\n",
+             (unsigned)numbits, (unsigned)size, (unsigned)newsize);
+  bit_set_position (&src, 0);
+  for (i = 0; i < strstart; i++)
+    bit_write_B (dat, bit_read_B (&src));
+  bit_set_position (&src, first_end);
+  for (i = first_end; i < sizepos; i++)
+    bit_write_B (dat, bit_read_B (&src));
+  if (newsize)
+    {
+      if (newsize > 0x7fff)
+        {
+          bit_write_RS (dat, (BITCODE_RS)(newsize >> 15));
+          bit_write_RS (dat, (BITCODE_RS)((newsize & 0x7fff) | 0x8000));
+        }
+      else
+        bit_write_RS (dat, (BITCODE_RS)newsize);
+      bit_write_B (dat, 1);
+    }
+  else
+    bit_write_B (dat, 0);
+  return;
+asis:
+  bit_write_bits (dat, (unsigned char *)data, numbits);
+}
+
 /* utf-8 string without lowercase letters, space or ! */
 static BITCODE_T
 fixup_invalid_tag (const Bit_Chain *restrict dat, char *restrict tag)
