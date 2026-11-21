@@ -15270,9 +15270,12 @@ static __nonnull ((1, 3, 4)) Dxf_Pair *new_object (
             }
           else if (obj->fixedtype == DWG_TYPE_MTEXTATTRIBUTEOBJECTCONTEXTDATA
                    && pair->code == 290
-                   && strEQc (subclass, "AcDbMTextAttributeObjectContextData"))
+                   && (strEQc (subclass, "AcDbAnnotScaleObjectContextData")
+                       || strEQc (subclass,
+                                  "AcDbMTextAttributeObjectContextData")))
             {
-              // not the is_default 290 of AcDbObjectContextData
+              // not the is_default 290 of AcDbObjectContextData. AutoCAD
+              // writes no AcDbMTextAttributeObjectContextData marker.
               obj->tio.object->tio.MTEXTATTRIBUTEOBJECTCONTEXTDATA
                   ->enable_context
                   = pair->value.i;
