@@ -20,7 +20,11 @@
 
   SUBCLASS (AcDbBlockReference);
 #ifdef IS_DXF
-    FIELD_RS0 (has_attribs, 66);
+    // r12 from r2004+: no 66 1 and bare SEQEND for has_attribs without any
+    // attrib (num_owned 0); AutoCAD rejects them
+    if (!(dat->version < R_13b1 && dat->from_version >= R_2004a
+          && !FIELD_VALUE (num_owned)))
+      FIELD_RS0 (has_attribs, 66);
     SINCE (R_13b1) {
       FIELD_HANDLE_NAME (block_header, 2, BLOCK_HEADER);
     }
