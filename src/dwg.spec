@@ -2757,6 +2757,16 @@ DWG_OBJECT (DICTIONARY)
                      strEQc (text, "SPATIAL"))
               dxf = 360;
           }
+        {
+          // No entry for an object not written to the DXF (missing, or
+          // of an undecoded class): AUDIT reports each as erased.
+          Dwg_Object *_item
+              = _obj->itemhandles[rcount1]
+                    ? dwg_ref_object (dwg, _obj->itemhandles[rcount1])
+                    : NULL;
+          if (!_item || _item->fixedtype == DWG_TYPE_UNKNOWN_OBJ)
+            continue;
+        }
         FIELD_T (texts[rcount1], 3);
         VALUE_HANDLE (_obj->itemhandles[rcount1], itemhandles, 2, dxf);
       }
@@ -2807,6 +2817,16 @@ DWG_OBJECT (DICTIONARYWDFLT)
       REPEAT (numitems, texts, T)
       {
         int dxf = FIELD_VALUE (is_hardowner) & 1 ? 360 : 350;
+        {
+          // No entry for an object not written to the DXF (missing, or
+          // of an undecoded class): AUDIT reports each as erased.
+          Dwg_Object *_item
+              = _obj->itemhandles[rcount1]
+                    ? dwg_ref_object (dwg, _obj->itemhandles[rcount1])
+                    : NULL;
+          if (!_item || _item->fixedtype == DWG_TYPE_UNKNOWN_OBJ)
+            continue;
+        }
         FIELD_T (texts[rcount1], 3);
         VALUE_HANDLE (_obj->itemhandles[rcount1], itemhandles, 2, dxf);
       }
