@@ -11907,7 +11907,7 @@ static const Dwg_DYNAPI_field _dwg_HATCH_ControlPoint_fields[] = {
   { "point",	"2RD", sizeof (BITCODE_2RD),  OFF (struct _dwg_HATCH_ControlPoint, point),
     1,0,0, 10 },
   { "weight",	"BD", sizeof (BITCODE_BD),  OFF (struct _dwg_HATCH_ControlPoint, weight),
-    0,0,0, 40 },
+    0,0,0, 42 },
   {NULL,	NULL,	0,	0,	0,0,0, 0},
 };
 /* from typedef struct _dwg_HATCH_DefLine: (sorted by offset) */

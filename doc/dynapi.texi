@@ -14667,7 +14667,7 @@ struct _dwg_HATCH_PathSeg*
 @item point
 2RD,	DXF 10
 @item weight
-BD,	DXF 40
+BD,	DXF 42
 
 @end vtable
 @end indentedblock
