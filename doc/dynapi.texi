@@ -10857,7 +10857,7 @@ BD,	DXF 50
 @item enable_context
 B,	DXF 290
 @item context
-Dwg_Object_SCALE
+Dwg_Object_MTEXTOBJECTCONTEXTDATA
 
 @end vtable
 @end indentedblock
