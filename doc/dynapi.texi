@@ -12,7 +12,7 @@ All header variables.
 @vtable @code
 
 @item ACADMAINTVER
-RC,	DXF 90
+RC
 @item ANGBASE
 BD,	DXF 50
 @item ANGDIR

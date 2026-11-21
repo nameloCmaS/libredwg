@@ -38,7 +38,7 @@ Dwg_Object *dwg_obj_generic_to_object (const void *restrict obj,
 /* from typedef struct _dwg_header_variables: (sorted by name) */
 static const Dwg_DYNAPI_field _dwg_header_variables_fields[] = {
   { "ACADMAINTVER",	"RC", sizeof (BITCODE_RC),  OFF (struct _dwg_header_variables, ACADMAINTVER),
-    0,0,0, 90 },
+    0,0,0, 0 },
   { "ANGBASE",	"BD", sizeof (BITCODE_BD),  OFF (struct _dwg_header_variables, ANGBASE),
     0,0,0, 50 },
   { "ANGDIR",	"B", sizeof (BITCODE_B),  OFF (struct _dwg_header_variables, ANGDIR),
