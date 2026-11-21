@@ -65,6 +65,8 @@ Dwg_Object_APPID *dwg_add_APPID (Dwg_Data *restrict dwg,
                                  const char *restrict name);
 Dwg_Object_VX_TABLE_RECORD *dwg_add_VX (Dwg_Data *restrict dwg,
                                         const char *restrict name);
+static void downconvert_VX (Dwg_Data *restrict dwg);
+static void downconvert_subentity_links (Dwg_Data *restrict dwg);
 BITCODE_RLL dwg_obj_generic_handlevalue (void *_obj);
 Dwg_Object *dwg_obj_generic_to_object (const void *restrict obj,
                                        int *restrict error);
@@ -3639,6 +3641,10 @@ dwg_encode (Dwg_Data *restrict dwg, Bit_Chain *restrict dat)
           }
         else
           dwg->header.num_sections = 6;
+        // HEADER.sections of an r2004+ source counts its section map (e.g.
+        // 29), not the section locators of the r13-r2000 file header, and
+        // would override num_sections in dwg_sections_init.
+        dwg->header.sections = dwg->header.num_sections;
         // minimal DXF:
         // if (dwg->opts & (DWG_OPTS_INDXF | DWG_OPTS_MINIMAL)
         //    && (!dwg->header_vars.HANDSEED ||
@@ -3782,6 +3788,12 @@ dwg_encode (Dwg_Data *restrict dwg, Bit_Chain *restrict dat)
         if (obj)
           dwg->header_vars.VX_CONTROL_OBJECT
               = dwg_add_handleref (dwg, 3, obj->handle.value, obj);
+      }
+    if (dwg->header.version >= R_13b1 && dwg->header.version <= R_2000
+        && dwg->header.from_version >= R_2004)
+      {
+        downconvert_VX (dwg);
+        downconvert_subentity_links (dwg);
       }
     VERSIONS (R_13b1, R_2000)
     {
@@ -5034,6 +5046,211 @@ r2007_written:
 }
 // clang-format off
 AFL_GCC_POP
+
+/* r13-r2000 from r2004+: the r2004+ drawing has no VX table, but AutoCAD
+   writes one into r2000: an empty record, then one record per VIEWPORT
+   entity of the current paper space, the overall viewport's named "1" and pointed to by the header
+   VX_TABLE_RECORD; each VIEWPORT points back with vport_entity_header; the
+   detail records are linked with prev_entry. AutoCAD rejects an r2000 file
+   of such a drawing without it. */
+static void
+downconvert_VX (Dwg_Data *restrict dwg)
+{
+  const Dwg_Version_Type version = dwg->header.version;
+  Dwg_Object *ctrl = dwg_find_first_type (dwg, DWG_TYPE_VX_CONTROL);
+  Dwg_Object *ps = dwg_paper_space_object (dwg);
+  BITCODE_RLL overall = 0, *vps = NULL, *recs = NULL;
+  BITCODE_BL num = 0, i;
+  Dwg_Object_VX_TABLE_RECORD *vx;
+  if (!ctrl || !ctrl->tio.object || !ctrl->tio.object->tio.VX_CONTROL
+      || ctrl->tio.object->tio.VX_CONTROL->num_entries)
+    return;
+  /* the overall viewport: the first of the paper space layout's viewports */
+  if (ps && ps->fixedtype == DWG_TYPE_BLOCK_HEADER
+      && ps->tio.object->tio.BLOCK_HEADER->layout)
+    {
+      Dwg_Object *lo
+          = dwg_ref_object (dwg, ps->tio.object->tio.BLOCK_HEADER->layout);
+      if (lo && lo->fixedtype == DWG_TYPE_LAYOUT
+          && lo->tio.object->tio.LAYOUT->num_viewports
+          && lo->tio.object->tio.LAYOUT->viewports
+          && lo->tio.object->tio.LAYOUT->viewports[0])
+        overall = lo->tio.object->tio.LAYOUT->viewports[0]->absolute_ref;
+    }
+  /* the VIEWPORTs of the current paper space (entmode 1) only, as AutoCAD:
+     those of the other layouts get no VX record */
+  for (i = 0; i < dwg->num_objects; i++)
+    if (dwg->object[i].fixedtype == DWG_TYPE_VIEWPORT
+        && dwg->object[i].tio.entity
+        && dwg->object[i].tio.entity->entmode == 1)
+      {
+        BITCODE_RLL *tmp
+            = (BITCODE_RLL *)realloc (vps, (num + 1) * sizeof (BITCODE_RLL));
+        if (!tmp)
+          {
+            free (vps);
+            return;
+          }
+        vps = tmp;
+        vps[num++] = dwg->object[i].handle.value;
+      }
+  if (!num)
+    {
+      free (vps);
+      return;
+    }
+  if (!overall)
+    overall = vps[0];
+  /* as AutoCAD: the overall viewport's record first (after the empty one),
+     then the others in object order */
+  for (i = 0; i < num; i++)
+    if (vps[i] == overall && i)
+      {
+        memmove (&vps[1], &vps[0], i * sizeof (BITCODE_RLL));
+        vps[0] = overall;
+        break;
+      }
+  recs = (BITCODE_RLL *)calloc (num, sizeof (BITCODE_RLL));
+  if (!recs)
+    {
+      free (vps);
+      return;
+    }
+  /* the add API writes the names in the source's string format */
+  dwg->header.version = dwg->header.from_version;
+  vx = dwg_add_VX (dwg, "");
+  if (vx)
+    {
+      vx->is_on = 1;
+      vx->is_xref_ref = 1;
+      vx->viewport = dwg_add_handleref (dwg, 4, 0, NULL);
+      vx->prev_entry = dwg_add_handleref (dwg, 5, 0, NULL);
+    }
+  for (i = 0; i < num; i++)
+    {
+      int error;
+      Dwg_Object *vxobj;
+      vx = dwg_add_VX (dwg, vps[i] == overall ? "1" : "");
+      if (!vx)
+        continue;
+      vxobj = dwg_obj_generic_to_object (vx, &error);
+      if (!vxobj)
+        continue;
+      vx->is_on = 1;
+      vx->is_xref_ref = 1;
+      vx->viewport = dwg_add_handleref (dwg, 4, vps[i], NULL);
+      recs[i] = vxobj->handle.value;
+    }
+  /* now that the object array is final: back pointers and links */
+  for (i = 0; i < num; i++)
+    {
+      Dwg_Object *vp = dwg_resolve_handle (dwg, vps[i]);
+      Dwg_Object *vxobj = recs[i] ? dwg_resolve_handle (dwg, recs[i]) : NULL;
+      BITCODE_RLL prev = 0;
+      if (!vp || !vxobj || vp->fixedtype != DWG_TYPE_VIEWPORT)
+        continue;
+      vp->tio.entity->tio.VIEWPORT->vport_entity_header
+          = dwg_add_handleref (dwg, 5, recs[i], NULL);
+      if (vps[i] != overall)
+        { // the next detail record
+          BITCODE_BL j;
+          for (j = i + 1; j < num; j++)
+            if (vps[j] != overall && recs[j])
+              {
+                prev = recs[j];
+                break;
+              }
+        }
+      vxobj->tio.object->tio.VX_TABLE_RECORD->prev_entry
+          = dwg_add_handleref (dwg, 5, prev, NULL);
+      if (vps[i] == overall)
+        dwg->header_vars.VX_TABLE_RECORD
+            = dwg_add_handleref (dwg, 5, recs[i], NULL);
+    }
+  dwg->header.version = version;
+  LOG_TRACE ("downconvert_VX: %u VX records\n", (unsigned)num + 1);
+  free (vps);
+  free (recs);
+}
+
+/* r13-r2000 from r2004+: link the VERTEX of a POLYLINE and the ATTRIB of an
+   INSERT as AutoCAD does: the first without prev_entity, the last without
+   next_entity, nolinks where prev and next are the adjacent handles. An
+   r2004+ source has no links, and dwg_fixup_BLOCKS_entities only links the
+   block's own entities. AutoCAD rejects a VERTEX/ATTRIB with null links and
+   nolinks 0. Also sets first/last_vertex and first/last_attrib when
+   missing. */
+static void
+link_subentities (Dwg_Data *restrict dwg, BITCODE_H *list, BITCODE_BL num,
+                  BITCODE_H *first, BITCODE_H *last)
+{
+  BITCODE_BL i;
+  if (!list || !num)
+    return;
+  for (i = 0; i < num; i++)
+    {
+      Dwg_Object *o = list[i] ? dwg_ref_object (dwg, list[i]) : NULL;
+      Dwg_Object_Entity *ent;
+      BITCODE_RLL cur, prev, next;
+      if (!o || o->supertype != DWG_SUPERTYPE_ENTITY || !o->tio.entity)
+        continue;
+      ent = o->tio.entity;
+      cur = o->handle.value;
+      prev = i > 0 && list[i - 1] ? list[i - 1]->absolute_ref : 0;
+      next = i + 1 < num && list[i + 1] ? list[i + 1]->absolute_ref : 0;
+      ent->nolinks = prev && next && prev == cur - 1 && next == cur + 1;
+      ent->prev_entity = dwg_add_handleref (dwg, 4, prev, NULL);
+      ent->next_entity = dwg_add_handleref (dwg, 4, next, NULL);
+    }
+  if (first && (!*first || !(*first)->absolute_ref) && list[0])
+    *first = dwg_add_handleref (dwg, 4, list[0]->absolute_ref, NULL);
+  if (last && (!*last || !(*last)->absolute_ref) && list[num - 1])
+    *last = dwg_add_handleref (dwg, 4, list[num - 1]->absolute_ref, NULL);
+}
+
+static void
+downconvert_subentity_links (Dwg_Data *restrict dwg)
+{
+  BITCODE_BL i;
+  for (i = 0; i < dwg->num_objects; i++)
+    {
+      Dwg_Object *obj = &dwg->object[i];
+      if (obj->supertype != DWG_SUPERTYPE_ENTITY || !obj->tio.entity)
+        continue;
+      switch (obj->fixedtype)
+        {
+        case DWG_TYPE_POLYLINE_2D:
+        case DWG_TYPE_POLYLINE_3D:
+        case DWG_TYPE_POLYLINE_PFACE:
+        case DWG_TYPE_POLYLINE_MESH:
+          {
+            /* all start with COMMON_ENTITY_POLYLINE */
+            Dwg_Entity_POLYLINE_2D *pl = obj->tio.entity->tio.POLYLINE_2D;
+            link_subentities (dwg, pl->vertex, pl->num_owned,
+                              &pl->first_vertex, &pl->last_vertex);
+          }
+          break;
+        case DWG_TYPE_INSERT:
+          {
+            Dwg_Entity_INSERT *in = obj->tio.entity->tio.INSERT;
+            if (in->has_attribs)
+              link_subentities (dwg, in->attribs, in->num_owned,
+                                &in->first_attrib, &in->last_attrib);
+          }
+          break;
+        case DWG_TYPE_MINSERT:
+          {
+            Dwg_Entity_MINSERT *in = obj->tio.entity->tio.MINSERT;
+            if (in->has_attribs)
+              link_subentities (dwg, in->attribs, in->num_owned,
+                                &in->first_attrib, &in->last_attrib);
+          }
+          break;
+        default:
+          break;
+        }
+    }
+}
 
 /* utf-8 string without lowercase letters, space or ! */
 static BITCODE_T
