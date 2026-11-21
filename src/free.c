@@ -35,6 +35,7 @@
 #include "classes.h"
 #include "hash.h"
 #include "free.h"
+#include "dynapi.h"
 
 #ifdef USE_TRACING
 static int env_var_checked_p;
@@ -695,6 +696,36 @@ free_TABLESTYLE_upconverted (Dwg_Object *restrict obj)
   _obj->num_cellstyles = 0;
 }
 
+// after downconvert_assoc_pab(), from R2013+: the action body holds the
+// owned params and value params of its ASSOCACTION in its
+// AcDbAssocParamBasedActionBody fields, which the spec frees only before
+// R2013 (free() follows from_version, not version).
+static int
+free_assoc_pab_r2013 (Bit_Chain *restrict from_dat, Dwg_Object *restrict obj)
+{
+  struct
+  {
+    Dwg_ASSOCPARAMBASEDACTIONBODY pab;
+  } *_obj;
+  Bit_Chain r2010_dat = *from_dat;
+  Bit_Chain *dat = &r2010_dat;
+  BITCODE_BL vcount;
+  const Dwg_DYNAPI_field *f;
+  if (obj->supertype != DWG_SUPERTYPE_OBJECT || !obj->name
+      || !memBEGINc (obj->name, "ASSOC") || !obj->tio.object->tio.APPID)
+    return 0;
+  f = dwg_dynapi_entity_field (obj->name, "pab");
+  if (!f || strNE (f->type, "Dwg_ASSOCPARAMBASEDACTIONBODY"))
+    return 0;
+  _obj = (void *)((char *)obj->tio.object->tio.APPID + f->offset);
+  LOG_HANDLE ("free_assoc_pab_r2013\n");
+  dat->from_version = R_2010;
+  AcDbAssocParamBasedActionBody_fields (pab);
+  _obj->pab.num_deps = 0;
+  _obj->pab.num_values = 0;
+  return 0;
+}
+
 // after downconvert_TABLE(): free the pre-R2010 cells, which the R2010+
 // spec does not know about (free() follows from_version, not version).
 // The handles are shared with the R2010+ content, not owned.
@@ -1092,6 +1123,8 @@ dwg_free_object (Dwg_Object *obj)
     free_TABLESTYLE_upconverted (obj);
   if (obj->fixedtype == DWG_TYPE_TABLE && dwg->header.from_version >= R_2010b)
     free_TABLE_r2010 (obj);
+  if (dwg->header.from_version >= R_2013b)
+    (void)free_assoc_pab_r2013 (dat, obj);
   switch (obj->type)
     {
     case DWG_TYPE_TEXT:
