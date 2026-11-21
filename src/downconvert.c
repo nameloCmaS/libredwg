@@ -1469,6 +1469,13 @@ lwpolyline_to_polyline (Dwg_Data *restrict dwg, const BITCODE_BL idx)
   BITCODE_BL num_objects = dwg->num_objects;
   Dwg_Object *tmp;
 
+  /* entmode 1 (paper space) and 2 (model space) have no ownerhandle. A paper
+     space LWPOLYLINE stays in the paper space, whose entities[] then refer to
+     the new POLYLINE, not to a freed handle; entmode 2, and any entity
+     without a valid owner, goes to the model space. */
+  if ((!owner || owner->fixedtype != DWG_TYPE_BLOCK_HEADER)
+      && ent->entmode == 1)
+    owner = dwg_paper_space_object (dwg);
   if (!owner || owner->fixedtype != DWG_TYPE_BLOCK_HEADER)
     owner = dwg_model_space_object (dwg);
   /* dwg_insert_entity() requires the model space. A fuzzed DWG may have none.

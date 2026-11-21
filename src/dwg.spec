@@ -354,7 +354,8 @@ DWG_ENTITY (ATTRIB)
     }
 
   SUBCLASS (AcDbAttribute);
-  DXF {
+  // r12: tag and flags are written in ATTRIB's PRE (R_13b1) block
+  DXF { SINCE (R_13b1) {
     SINCE (R_2010b) {
       FIELD_RC (is_locked_in_block, 280);
     }
@@ -367,7 +368,7 @@ DWG_ENTITY (ATTRIB)
     SINCE (R_2007a) {
       FIELD_B (lock_position_flag, 280);
     }
-  }
+  } }
   SINCE (R_2010b)
     {
       FIELD_RC (is_locked_in_block, 0);
@@ -578,7 +579,8 @@ DWG_ENTITY (ATTDEF)
     }
 
   SUBCLASS (AcDbAttributeDefinition);
-  DXF {
+  // r12: prompt, tag and flags are written in ATTDEF's PRE (R_13b1) block
+  DXF { SINCE (R_13b1) {
     VALUE_RC (0, 280); // 0 = 2010+ (class_version)
     FIELD_T (prompt, 3);
     FIELD_T (tag, 2);
@@ -595,7 +597,7 @@ DWG_ENTITY (ATTDEF)
     SINCE (R_2018b) {
       FIELD_RC (mtext_type, 71); // 1=single line, 2=multi line attrib, 4=multi line attdef
     }
-  }
+  } }
   SINCE (R_2010b)
     {
       FIELD_RC (is_locked_in_block, 0);
@@ -683,6 +685,22 @@ DWG_ENTITY (BLOCK)
       VALUE_T (_hdr->name, 2);
     } else {
       BLOCK_NAME (name, 2);
+    }
+    // r12 DXF: the BLOCK needs its flags and base point (10) too, as
+    // AutoCAD writes them; AutoCAD rejects a BLOCK without the 10.
+    {
+      Dwg_Bitcode_3RD base_pt;
+      base_pt.x = _hdr ? _hdr->base_pt.x : _obj->base_pt.x;
+      base_pt.y = _hdr ? _hdr->base_pt.y : _obj->base_pt.y;
+      base_pt.z = _hdr ? _hdr->base_pt.z : 0.0;
+      VALUE_RS (_hdr ? _hdr->flag & 0x3f : 0, 70);
+      VALUE_3BD (base_pt, 10);
+      if (_hdr && bit_empty_T (dat, _obj->name)) {
+        VALUE_T (_hdr->name, 3);
+      } else {
+        BLOCK_NAME (name, 3);
+      }
+      VALUE_TFF ("", 1);
     }
   }
   SINCE (R_13b1)
@@ -781,7 +799,9 @@ DWG_ENTITY (MINSERT)
   SUBCLASS (AcDbMInsertBlock);
 #ifdef IS_DXF
     FIELD_HANDLE_NAME (block_header, 2, BLOCK_HEADER);
-    if (FIELD_VALUE (has_attribs))
+    if (FIELD_VALUE (has_attribs)
+        && !(dat->version < R_13b1 && dat->from_version >= R_2004a
+             && !FIELD_VALUE (num_owned)))
       FIELD_B (has_attribs, 66);
 #endif
   FIELD_3DPOINT (ins_pt, 10);
@@ -3589,6 +3609,33 @@ DWG_TABLE (STYLE)
     FIELD_RC (generation, 71);
     LOG_TEXT_GENERATION
     FIELD_RD (last_height, 42);
+#ifdef IS_DXF
+    // r12 has no TrueType fonts. AutoCAD writes txt for a .ttf/.otf/.ttc
+    // or empty font file (AUDIT reports a duplicate STYLE name with an
+    // empty one).
+    if (dat->from_version >= R_13b1)
+      {
+        char *_f = IS_FROM_TU (dat)
+                       ? bit_convert_TU ((BITCODE_TU)_obj->font_file)
+                       : _obj->font_file;
+        const size_t _l = _f ? strlen (_f) : 0;
+        char _ext[5] = { 0 };
+        if (_l >= 4)
+          for (int _k = 0; _k < 4; _k++)
+            {
+              const char _c = _f[_l - 4 + _k];
+              _ext[_k] = (_c >= 'A' && _c <= 'Z') ? (char)(_c + 32) : _c;
+            }
+        if (!_l || !strcmp (_ext, ".ttf") || !strcmp (_ext, ".otf")
+            || !strcmp (_ext, ".ttc"))
+          VALUE_TFF ("txt", 3)
+        else
+          FIELD_TFv (font_file, 64, 3);
+        if (IS_FROM_TU (dat))
+          free (_f);
+      }
+    else
+#endif
     FIELD_TFv (font_file, 64, 3);
     SINCE (R_2_4)
       FIELD_TFv (bigfont_file, 64, 4);
