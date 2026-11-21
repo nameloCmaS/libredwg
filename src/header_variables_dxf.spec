@@ -29,10 +29,14 @@
   }
 
   VERSIONS (R_13b1, R_2013) {
-    HEADER_VALUE (ACADMAINTVER, RS, 70, dwg->header.maint_version);
+    HEADER_VALUE (ACADMAINTVER, RS, 70,
+                  dxf_acadmaintver (dat->version, dat->from_version,
+                                    dwg->header.maint_version));
   }
   SINCE (R_2018) {
-    HEADER_VALUE (ACADMAINTVER, RL, 90, dwg->header.maint_version);
+    HEADER_VALUE (ACADMAINTVER, RL, 90,
+                  dxf_acadmaintver (dat->version, dat->from_version,
+                                    dwg->header.maint_version));
   }
   SINCE (R_13b1) {
     HEADER_VALUE_TV (DWGCODEPAGE, 3, codepage);
