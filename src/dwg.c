@@ -1700,9 +1700,14 @@ dwg_next_entity (const Dwg_Object *restrict obj)
 /** Strip MTEXT format codes to plain text.
  *  Used when downconverting an R2018+ multi-line ATTRIB/ATTDEF (whose text
  *  is in mtext.text) to an older version that only carries a single-line
- *  text_value/default_value. \P (paragraph) becomes a space; { } nesting and
- *  \X... format codes are dropped; \\U+/\\c/\\u unicode specs are dropped;
- *  ~ (non-breaking space) becomes a space.
+ *  text_value/default_value, and for the r12 DXF TEXT of an MTEXT.
+ *  - \P (paragraph) and \N (column break) become a space, ~ (non-breaking
+ *    space) too;
+ *  - { } grouping is dropped; \{ \} \\ are the literal chars;
+ *  - \U+XXXX becomes the UTF-8 char; \M+NXXXX (DBCS) becomes '?';
+ *  - \S...; (stacked) keeps its text, ^ and # as '/';
+ *  - \A \C \c \F \f \H \Q \T \W \p (with an argument up to ;) and the
+ *    toggles \L \l \O \o \K \k \X are dropped.
  *  Returns a newly allocated NUL-terminated string (caller frees), or NULL
  *  on OOM. An empty/NULL input yields a (possibly empty) string.
  */
@@ -1715,67 +1720,106 @@ dwg_strip_mtext (const char *restrict mtext)
   if (!mtext)
     return NULL;
   len = strlen (mtext);
-  out = (char *)malloc (len + 1);
+  out = (char *)malloc (len + 1); // the output is never longer
   if (!out)
     return NULL;
   o = 0;
   i = 0;
   while (i < len)
     {
-      char c = mtext[i];
+      const char c = mtext[i];
       if (c == '{' || c == '}')
-        {
-          i++;
-        }
+        i++;
       else if (c == '~') // non-breaking space
         {
           out[o++] = ' ';
           i++;
         }
-      else if (c == '\\')
+      else if (c == '\\' && i + 1 < len)
         {
-          i++;
-          if (i >= len)
-            break;
-          if (mtext[i] == '\\') // \\ literal, \\U+xxxx, \\c/\\u NNNN
+          const char code = mtext[i + 1];
+          i += 2;
+          switch (code)
             {
-              i++;
-              if (i < len
-                  && (mtext[i] == 'U' || mtext[i] == 'u' || mtext[i] == 'c'))
-                {
-                  if (mtext[i] == 'U' && i + 1 < len && mtext[i + 1] == '+')
-                    i += 2;
-                  else
-                    i++;
-                  while (i < len && isxdigit ((unsigned char)mtext[i]))
-                    i++;
-                }
-            }
-          else if (mtext[i] == 'p' || mtext[i] == 'P') // paragraph
-            {
+            case '\\':
+            case '{':
+            case '}':
+              out[o++] = code;
+              break;
+            case 'P':
+            case 'N':
               out[o++] = ' ';
-              i++;
-            }
-          else if (mtext[i] == 'c' && i + 1 < len && mtext[i + 1] == 'h')
-            { // \char NN; / \char 0xNN;
-              i += 2;
-              while (i < len && mtext[i] == ' ')
+              break;
+            case 'U':
+              // \U+XXXX: 7 input bytes, at most 3 UTF-8 bytes
+              if (i + 5 <= len && mtext[i] == '+'
+                  && isxdigit ((unsigned char)mtext[i + 1])
+                  && isxdigit ((unsigned char)mtext[i + 2])
+                  && isxdigit ((unsigned char)mtext[i + 3])
+                  && isxdigit ((unsigned char)mtext[i + 4]))
+                {
+                  char hex[5];
+                  unsigned long cp;
+                  memcpy (hex, &mtext[i + 1], 4);
+                  hex[4] = '\0';
+                  cp = strtoul (hex, NULL, 16);
+                  i += 5;
+                  if (cp < 0x80)
+                    out[o++] = (char)cp;
+                  else if (cp < 0x800)
+                    {
+                      out[o++] = (char)(0xC0 | (cp >> 6));
+                      out[o++] = (char)(0x80 | (cp & 0x3F));
+                    }
+                  else
+                    {
+                      out[o++] = (char)(0xE0 | (cp >> 12));
+                      out[o++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                      out[o++] = (char)(0x80 | (cp & 0x3F));
+                    }
+                }
+              break;
+            case 'M':
+              // \M+NXXXX
+              if (i + 6 <= len && mtext[i] == '+')
+                i += 6;
+              out[o++] = '?';
+              break;
+            case 'S':
+              // \Sup^down; \Sup/down; \Sup#down;
+              while (i < len && mtext[i] != ';')
+                {
+                  char s = mtext[i++];
+                  if (s == '\\' && i < len) // \; \^ \/ \#
+                    s = mtext[i++];
+                  else if (s == '^' || s == '#')
+                    s = '/';
+                  out[o++] = s;
+                }
+              if (i < len)
+                i++; // ;
+              break;
+            case 'A':
+            case 'C':
+            case 'c':
+            case 'F':
+            case 'f':
+            case 'H':
+            case 'h':
+            case 'Q':
+            case 'q':
+            case 'T':
+            case 't':
+            case 'W':
+            case 'w':
+            case 'p':
+              while (i < len && mtext[i] != ';')
                 i++;
-              if (i + 1 < len && mtext[i] == '0' && mtext[i + 1] == 'x')
-                i += 2;
-              while (i < len && isxdigit ((unsigned char)mtext[i]))
-                i++;
-              if (i < len && mtext[i] == ';')
-                i++;
-            }
-          else // \A, \C, \f, \H, \W, \Q, \S, \L, \O, \T, ... format code
-            {
-              i++; // skip the code letter
-              while (i < len && mtext[i] != ' ' && mtext[i] != ';'
-                     && mtext[i] != '}')
-                i++;
-              if (i < len && mtext[i] == ';')
-                i++;
+              if (i < len)
+                i++; // ;
+              break;
+            default: // \L \l \O \o \K \k \X ...: toggles without argument
+              break;
             }
         }
       else
