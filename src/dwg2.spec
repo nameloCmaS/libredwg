@@ -6599,18 +6599,26 @@ DWG_OBJECT (BLOCKLOOKUPACTION)
   DECODER {
     FIELD_VALUE (numelems) = _obj->numrows * _obj->numcols;
   }
-  FIELD_VECTOR_T (exprs, T, numelems, 302)
+  // AutoCAD's R2004 and R2018 records: the rows * cols cells, then
+  // one lut entry per column (not per cell) with 3 codes, 2 flags and 2
+  // strings; 301 and 303 are DXF only. The r2007+ strings are in the string
+  // stream, not in the data stream.
   DXF { VALUE_TFF ("", 301); }
-  REPEAT (numelems, lut, Dwg_BLOCKLOOKUPACTION_lut)
+  FIELD_VECTOR_TS (exprs, T, numelems, 302);
+  REPEAT (numcols, lut, Dwg_BLOCKLOOKUPACTION_lut)
   REPEAT_BLOCK
-    BlockAction_ConnectionPts (lut[rcount1].conn_pts, 0, 3, 94, 303);
+    DXF { SUB_FIELD_T (lut[rcount1].conn_pts[0], name, 303); }
+    SUB_FIELD_BL (lut[rcount1].conn_pts[0], code, 94);
+    SUB_FIELD_BL (lut[rcount1].conn_pts[1], code, 95);
+    SUB_FIELD_BL (lut[rcount1].conn_pts[2], code, 96);
     SUB_FIELD_B (lut[rcount1], b282, 282);
+    SUB_FIELD_T (lut[rcount1].conn_pts[2], name, 305);
     SUB_FIELD_B (lut[rcount1], b281, 281);
+    SUB_FIELD_T (lut[rcount1].conn_pts[1], name, 304);
     SET_PARENT_OBJ (lut[rcount1]);
   END_REPEAT_BLOCK
   END_REPEAT (lut)
   FIELD_B (b280, 280);
-  DXF { FIELD_VECTOR_T (exprs, T, numelems, 302); }
   START_OBJECT_HANDLE_STREAM;
 DWG_OBJECT_END
 
