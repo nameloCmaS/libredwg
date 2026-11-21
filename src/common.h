@@ -718,6 +718,33 @@ is_insert_polyline (const enum DWG_OBJECT_TYPE fixedtype)
          || fixedtype == DWG_TYPE_POLYLINE_MESH;
 }
 
+/* DXF $ACADMAINTVER: the product maintenance version, not the DWG header
+   byte, which is 0 in AutoCAD 2027 DWGs. AutoCAD reads newer fields only from
+   a high enough value: an r2018 MTEXT text frame (90 16) with 0 is rejected
+   ("Missing DXF group code: 90"). Keep a non-zero DWG value when writing the
+   same version, else use what AutoCAD LT 2027 writes for the target. */
+static inline BITCODE_RL
+dxf_acadmaintver (const Dwg_Version_Type version,
+                  const Dwg_Version_Type from_version,
+                  const BITCODE_RL maint_version)
+{
+  if (maint_version && version == from_version)
+    return maint_version;
+  if (version >= R_2018)
+    return 427;
+  if (version >= R_2013)
+    return 125;
+  if (version >= R_2010)
+    return 226;
+  if (version >= R_2007)
+    return 50;
+  if (version >= R_2004)
+    return 104;
+  if (version >= R_2000)
+    return 18;
+  return maint_version;
+}
+
 // <path-to>/dxf.ext => copy of "dxf", "ext"
 // Returns a malloc'ed copy of basename, and
 // sets ext to the char behind the last "." of filepath
