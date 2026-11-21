@@ -977,6 +977,71 @@ downconvert_MLEADERSTYLE (Dwg_Object *restrict obj)
   oo->eed[idx].data = NULL;
 }
 
+/* Objects whose format changed in r2010 (VISUALSTYLE, SUN) carry, when
+   AutoCAD saves them to an older release, the ACAD EED
+   1000 "AcDbSavedByObjectVersion", 1070 0. */
+void
+downconvert_saved_by_version (Dwg_Object *restrict obj)
+{
+  static const char tag[] = "AcDbSavedByObjectVersion";
+  const unsigned len = sizeof (tag) - 1; // 24
+  Dwg_Data *dwg = obj->parent;
+  Dwg_Object_Object *oo;
+  Dwg_Object_APPID *appid;
+  BITCODE_H hdl;
+  BITCODE_RLL eedhdl;
+  BITCODE_BL oindex;
+  unsigned int idx, i;
+  const BITCODE_BS type = obj->fixedtype;
+  const int is_tu = dwg->header.version >= R_2007;
+
+  if (!obj->tio.object)
+    return;
+  oindex = obj->index;
+  hdl = dwg_find_tablehandle_silent (dwg, "ACAD", "APPID");
+  if (hdl)
+    eedhdl = hdl->handleref.value;
+  else
+    {
+      appid = dwg_add_APPID (dwg, "ACAD");
+      if (!appid)
+        return;
+      eedhdl = dwg_obj_generic_handlevalue (appid);
+    }
+  obj = &dwg->object[oindex]; // obj may have moved
+  if (obj->fixedtype != type || !obj->tio.object)
+    return;
+  oo = obj->tio.object;
+  if (dwg_has_eed_appid (oo, eedhdl))
+    return;
+  idx = oo->num_eed;
+  oo->num_eed += 2;
+  oo->eed = (Dwg_Eed *)realloc (oo->eed, (oo->num_eed + 1) * sizeof (Dwg_Eed));
+  memset (&oo->eed[idx], 0, 3 * sizeof (Dwg_Eed));
+  dwg_add_handle (&oo->eed[idx].handle, 5, eedhdl, NULL);
+  // string item: code, length, codepage (TV) or TU chars, + the 70 item
+  oo->eed[idx].size = is_tu ? 1 + 2 + 2 * len + 3 : 1 + 1 + 2 + len + 3;
+  oo->eed[idx].data = (Dwg_Eed_Data *)calloc (EED_SZ (8 + 2 * (len + 1)), 1);
+  oo->eed[idx].data->code = 0;
+  if (is_tu)
+    {
+      oo->eed[idx].data->u.eed_0_r2007.length = len;
+      for (i = 0; i < len; i++)
+        oo->eed[idx].data->u.eed_0_r2007.string[i] = (DWGCHAR)tag[i];
+    }
+  else
+    {
+      oo->eed[idx].data->u.eed_0.length = len;
+      oo->eed[idx].data->u.eed_0.codepage = 30;
+      memcpy (oo->eed[idx].data->u.eed_0.string, tag, len + 1);
+    }
+  idx++;
+  oo->eed[idx].size = 0;
+  oo->eed[idx].data = (Dwg_Eed_Data *)calloc (EED_SZ (3), 1);
+  oo->eed[idx].data->code = 70;
+  oo->eed[idx].data->u.eed_70.rs = 0;
+}
+
 /* An r2000 PROXY_OBJECT written from r2004+ carries, as AutoCAD writes it,
    the ACAD EED 1000 "AcRTDxfName", 1000 <the class's DXF name> (e.g.
    "AECC_TREE_NODE", on every proxy). r2004 has the "cn:" class name field

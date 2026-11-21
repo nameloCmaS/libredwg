@@ -3063,6 +3063,9 @@ dwg_encode (Dwg_Data *restrict dwg, Bit_Chain *restrict dat)
           Dwg_Object *obj = &dwg->object[i];
           if (obj->fixedtype == DWG_TYPE_MLEADERSTYLE)
             downconvert_MLEADERSTYLE (obj);
+          else if (obj->fixedtype == DWG_TYPE_VISUALSTYLE
+                   || obj->fixedtype == DWG_TYPE_SUN)
+            downconvert_saved_by_version (obj);
           else if (obj->fixedtype == DWG_TYPE_DIMSTYLE)
             downconvert_DIMSTYLE (dat, obj); // so far Annotative only
         }
