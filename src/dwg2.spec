@@ -1045,9 +1045,49 @@ DWG_ENTITY_END
 // See TABLE and p20.4.101
 // Added with r2005. unstable for r2010+
 // TABLESTYLE only contains the Table (R24), _Title, _Header and _Data cell style.
+// In the DXF AutoCAD writes the classic table style for all versions, with
+// the row styles data, title, header. The r2010+ CELLSTYLE structure is not
+// DXF: AUDIT reports a TABLESTYLE written with it.
+#define Rowstyle_dxf_fields(rs)                                               \
+  FIELD_HANDLE (rs.text_style, 5, 7);                                         \
+  FIELD_BD (rs.text_height, 140);                                             \
+  FIELD_BS (rs.text_alignment, 170);                                          \
+  FIELD_CMTC (rs.text_color, 62);                                             \
+  FIELD_CMTC (rs.fill_color, 63);                                             \
+  FIELD_B (rs.has_bgcolor, 283);                                              \
+  SINCE (R_2007a)                                                             \
+  {                                                                           \
+    FIELD_BL (rs.data_type, 90);                                              \
+    FIELD_BL (rs.unit_type, 91);                                              \
+    FIELD_TU (rs.format_string, 1);                                           \
+  }                                                                           \
+  Border_fields (rs, top_border, 0);                                          \
+  Border_fields (rs, hor_border, 1);                                          \
+  Border_fields (rs, bot_border, 2);                                          \
+  Border_fields (rs, left_border, 3);                                         \
+  Border_fields (rs, vert_border, 4);                                         \
+  Border_fields (rs, right_border, 5)
+
 DWG_OBJECT (TABLESTYLE)
   HANDLE_UNKNOWN_BITS;
   SUBCLASS (AcDbTableStyle)
+#ifdef IS_DXF
+  if (dwg->header.from_version > R_2007)
+    downconvert_TABLESTYLE ((Dwg_Object *)obj);
+  SINCE (R_2010b) {
+    VALUE_RC (0, 280); // class version
+  }
+  FIELD_T (name, 3);
+  FIELD_BS (flow_direction, 70);
+  FIELD_BS (flags, 71);
+  FIELD_BD (horiz_cell_margin, 40);
+  FIELD_BD (vert_cell_margin, 41);
+  FIELD_B (is_title_suppressed, 280);
+  FIELD_B (is_header_suppressed, 281);
+  Rowstyle_dxf_fields (data_rowstyle);
+  Rowstyle_dxf_fields (title_rowstyle);
+  Rowstyle_dxf_fields (header_rowstyle);
+#else
   UNTIL (R_2007) {
 #if defined IS_ENCODER || defined IS_DXF
     // first, it sets the margins
@@ -1115,6 +1155,7 @@ DWG_OBJECT (TABLESTYLE)
     Rowstyle_fields (title_rowstyle);
     Rowstyle_fields (header_rowstyle);
   }
+#endif /* IS_DXF */
   START_OBJECT_HANDLE_STREAM;
 DWG_OBJECT_END
 
