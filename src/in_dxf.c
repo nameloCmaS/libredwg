@@ -8890,6 +8890,11 @@ add_xdata (Bit_Chain *restrict dat, Dwg_Object *restrict obj,
         size_t length = strlen (pair->value.s.ptr);
         if (length > 0)
           rbuf->value.str.u.wdata = bit_utf8_to_TU (pair->value.s.ptr, 0);
+        else // an empty string (AutoCAD r2007+ DXF): not NULL, for
+             // bit_wcs2len
+          rbuf->value.str.u.wdata = (BITCODE_TU)calloc (1, sizeof (uint16_t));
+        if (!rbuf->value.str.u.wdata)
+          goto invalid;
         // the chars, not the UTF-8 bytes
         length = bit_wcs2len (rbuf->value.str.u.wdata);
         rbuf->value.str.size = length & 0xFFFF;
