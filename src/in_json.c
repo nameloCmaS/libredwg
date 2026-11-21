@@ -2373,8 +2373,8 @@ json_mline_num_lines (const Dwg_Object *restrict obj, const int num_lines)
   LOG_TRACE ("MLINE.num_lines = %d\n", new);
 }
 
-// BLOCKLOOKUPACTION: the encoder walks exprs and lut numrows * numcols
-// times; a product above them is reset to 0, with an error
+// BLOCKLOOKUPACTION: the encoder walks exprs numrows * numcols times and
+// lut numcols times; a count above the array is reset to 0, with an error
 static void
 json_blocklookupaction_check (const Dwg_DYNAPI_field *restrict fields,
                               void *restrict _obj, const char *restrict name,
@@ -2387,7 +2387,7 @@ json_blocklookupaction_check (const Dwg_DYNAPI_field *restrict fields,
     return;
   rows = *(BITCODE_BL *)((char *)_obj + frows->offset);
   cols = *(BITCODE_BL *)((char *)_obj + fcols->offset);
-  if ((long)rows * (long)cols > size)
+  if (strEQc (key, "lut") ? (long)cols > size : (long)rows * (long)cols > size)
     {
       LOG_ERROR ("%s.%s: numrows * numcols = " FORMAT_BL
                  " above the array length %ld, reset",
