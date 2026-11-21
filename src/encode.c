@@ -6847,12 +6847,31 @@ dwg_encode_variable_type (Dwg_Data *restrict dwg, Bit_Chain *restrict dat,
   return DWG_ERR_UNHANDLEDCLASS;
 }
 
+/* Whether to copy the raw r2018 record of a partly decoded dynamic block
+   class (BLOCKLOOKUPACTION ...) to r2013 output, instead of re-encoding it
+   from its incomplete fields, which cuts it short. AutoCAD writes
+   byte-identical r2013 and r2018 records for most classes, but the raw bits
+   are not the whole record in the r2013 layout, and AutoCAD cannot read
+   r2013 output with such copies. So always false for now. */
+static bool
+raw_same_in_r2013 (const Dwg_Data *restrict dwg,
+                   const Dwg_Object *restrict obj)
+{
+  if (dwg->header.version < R_2013b || dwg->header.version >= R_2018b
+      || dwg->header.from_version < R_2018b)
+    return false;
+  /* Disabled, see the raw_same_in_r2013 comment. */
+  (void)obj;
+  return false;
+}
+
 bool
 dwg_encode_unknown_bits (Bit_Chain *restrict dat, Dwg_Object *restrict obj)
 {
   Dwg_Data *restrict dwg = obj->parent;
-  if (dwg->header.version == dwg->header.from_version && obj->unknown_bits
-      && obj->num_unknown_bits) // cannot calculate
+  if ((dwg->header.version == dwg->header.from_version
+       || raw_same_in_r2013 (dwg, obj))
+      && obj->unknown_bits && obj->num_unknown_bits) // cannot calculate
     {
       int len = obj->num_unknown_bits / 8;
       const int mod = obj->num_unknown_bits % 8;
