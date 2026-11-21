@@ -2881,7 +2881,13 @@ DWG_ENTITY (MTEXT)
   SINCE (R_2018)
   {
     FIELD_B (is_not_annotative, 0);
-    if (FIELD_VALUE (is_not_annotative))
+    if (FIELD_VALUE (is_not_annotative)
+#ifdef IS_DXF
+        // AutoCAD writes the DXF embedded object only for MTEXT with
+        // columns, and AUDIT reports any other MTEXT that has one.
+        && FIELD_VALUE (column_type) > 0 && FIELD_VALUE (column_type) <= 2
+#endif
+    )
       {
         // AnnotScaleObject
         DXF { VALUE_TFF ( "Embedded Object", 101 ); }
@@ -2892,8 +2898,9 @@ DWG_ENTITY (MTEXT)
         // redundant fields
         FIELD_BL (ignore_attachment, 0); // not in DXF. prev as BS
         DXF {
-          FIELD_3BD (ins_pt, 10);
-          FIELD_3BD (x_axis_dir, 11);
+          // as AutoCAD: 10 the x axis, 11 the insertion point
+          FIELD_3BD (x_axis_dir, 10);
+          FIELD_3BD (ins_pt, 11);
         } else {
           FIELD_3BD (x_axis_dir, 11);
           FIELD_3BD (ins_pt, 10);
@@ -2926,7 +2933,18 @@ DWG_ENTITY (MTEXT)
             FIELD_B (flow_reversed, 74);
             if (!FIELD_VALUE (auto_height) && FIELD_VALUE (column_type) == 2)
               {
+#ifdef IS_DXF
+                // AutoCAD writes 0.0 for the negative heights it stores
+                // (known for single columns: -extents_height or similar)
+                if (_obj->column_heights)
+                  for (vcount = 0; vcount < _obj->num_column_heights; vcount++)
+                    {
+                      double _h = _obj->column_heights[vcount];
+                      VALUE_BD (_h < 0.0 ? 0.0 : _h, 46);
+                    }
+#else
                 FIELD_VECTOR (column_heights, BD, num_column_heights, 46);
+#endif
               }
           }
       }
