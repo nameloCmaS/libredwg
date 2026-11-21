@@ -705,7 +705,10 @@
       FIELD_BD (SHADOWPLANELOCATION, 40); // z height
     }
 
-  SINCE (R_14)
+  /* Not in r2007+, where these bits are the start of the string stream
+     (always 1, 180, 36874, 32843). AutoCAD's r2004 files have varying
+     values in unknown_54 .. unknown_57. */
+  VERSIONS (R_14, R_2004)
     {
       FIELD_BS (unknown_54, 0); /* (type 5/6 only) these do not seem to be required */
       FIELD_BS (unknown_55, 0);
