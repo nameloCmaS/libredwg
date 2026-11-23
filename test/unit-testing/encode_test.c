@@ -24,6 +24,8 @@ extern unsigned int loglevel;
 
 // from in_json.h
 extern int dwg_read_json (Bit_Chain *restrict dat, Dwg_Data *restrict dwg);
+// from in_dxf.h
+extern int dwg_read_dxf (Bit_Chain *restrict dat, Dwg_Data *restrict dwg);
 // from out_json.h
 extern int dwg_write_json_dat (Bit_Chain *restrict dat,
                                Dwg_Data *restrict dwg);
@@ -725,6 +727,380 @@ in_json_dotted_array_test (void)
   free (json);
   ok ("in_json_dotted_array: dotted keys into unset arrays get the "
       "spec-walked elements");
+}
+
+static int read_test_data (const char *name, Bit_Chain *file);
+
+/* A test-data file as a NUL-terminated text. */
+static char *
+dxf_test_data_text (const char *name)
+{
+  Bit_Chain file;
+  char *text;
+  if (read_test_data (name, &file))
+    return NULL;
+  text = (char *)realloc (file.chain, file.size + 1);
+  if (!text)
+    {
+      free (file.chain);
+      return NULL;
+    }
+  text[file.size] = '\0';
+  return text;
+}
+
+/* The DXF of a test-data drawing at the given version, as text. */
+static char *
+dxf_of_test_data (const char *name, const Dwg_Version_Type version)
+{
+  static const char out[] = "encode_test_out.dxf";
+  const unsigned level = loglevel;
+  Dwg_Data dwg = { 0 };
+  Bit_Chain file;
+  char *text = NULL;
+  int error;
+  if (read_test_data (name, &file))
+    return NULL;
+  loglevel = 0; // a whole drawing
+  error = dwg_decode (&file, &dwg);
+  free (file.chain);
+  if (error < DWG_ERR_CRITICAL)
+    {
+      FILE *fp;
+      dwg.header.from_version = dwg.header.version;
+      dwg.header.version = version;
+      remove (out);
+      error = dxf_write_file (out, &dwg, 0);
+      fp = error < DWG_ERR_CRITICAL ? fopen (out, "rb") : NULL;
+      if (fp)
+        {
+          long len;
+          if (!fseek (fp, 0, SEEK_END) && (len = ftell (fp)) > 0
+              && !fseek (fp, 0, SEEK_SET)
+              && (text = (char *)malloc ((size_t)len + 1)))
+            {
+              if (fread (text, 1, (size_t)len, fp) == (size_t)len)
+                text[len] = '\0';
+              else
+                {
+                  free (text);
+                  text = NULL;
+                }
+            }
+          fclose (fp);
+        }
+      remove (out);
+    }
+  dwg_free (&dwg);
+  loglevel = level;
+  return text;
+}
+
+/* The next group of a DXF text: its code and its value without the line
+   end. Returns 0 at the end. */
+static int
+dxf_group (const char **pp, int *code, const char **value, size_t *len)
+{
+  const char *p = *pp, *e;
+  char *end;
+  *code = (int)strtol (p, &end, 10);
+  if (end == p || !(p = strchr (end, '\n')))
+    return 0;
+  p++;
+  e = strchr (p, '\n');
+  if (!e)
+    e = p + strlen (p);
+  *value = p;
+  *len = (size_t)(e - p);
+  if (*len && p[*len - 1] == '\r')
+    (*len)--;
+  *pp = *e ? e + 1 : e;
+  return 1;
+}
+
+/* Whether a group value is s. */
+static int
+dxf_is (const char *value, const size_t len, const char *s)
+{
+  return strlen (s) == len && !memcmp (value, s, len);
+}
+
+/* Appends "name|" to a list of names, once. */
+static void
+dxf_list_add (char *list, const size_t listsize, const char *value,
+              const size_t len)
+{
+  char item[80];
+  if (len + 3 > sizeof (item))
+    return;
+  item[0] = '|';
+  memcpy (&item[1], value, len);
+  item[len + 1] = '|';
+  item[len + 2] = '\0';
+  if (!strstr (list, item) && strlen (list) + len + 2 < listsize)
+    {
+      if (!*list)
+        strcpy (list, "|");
+      strcat (list, &item[1]);
+    }
+}
+
+/* Whether two |name| lists have the same names, in any order. */
+static int
+dxf_list_same (const char *a, const char *b)
+{
+  const char *p;
+  for (p = a; *p && p[1]; p = strchr (p + 1, '|'))
+    {
+      char item[80];
+      const char *e = strchr (p + 1, '|');
+      if (!e || (size_t)(e - p) + 2 > sizeof (item))
+        return 0;
+      memcpy (item, p, (size_t)(e - p) + 1);
+      item[e - p + 1] = '\0';
+      if (!strstr (b, item))
+        return 0;
+    }
+  return strlen (a) == strlen (b);
+}
+
+/* What the DXF checks compare. */
+typedef struct
+{
+  long maintver;
+  char sections[100];  // |HEADER|TABLES|...
+  char types[600];     // the entity types in BLOCKS and ENTITIES
+  char layers[300];    // the LAYER names
+  char viewports[200]; // |handle=id| per VIEWPORT
+  unsigned rotated;    // DIMENSION_LINEAR (AcDbRotatedDimension)
+  unsigned dim52;      // 52 groups in DIMENSIONs
+  unsigned mtext;      // MTEXTs
+  unsigned mtext101;   // MTEXTs with an embedded object
+} dxf_features;
+
+static void
+dxf_features_of (const char *text, dxf_features *f)
+{
+  const char *p = text, *value;
+  size_t len;
+  int code, prev_code = -1;
+  char cur[40] = "", sec[20] = "", vp_handle[20] = "";
+  int in_mtext101 = 0;
+  memset (f, 0, sizeof (dxf_features));
+  f->maintver = -1;
+  while (dxf_group (&p, &code, &value, &len))
+    {
+      if (code == 0)
+        {
+          if (dxf_is (value, len, "MTEXT"))
+            f->mtext++;
+          in_mtext101 = 0;
+          snprintf (cur, sizeof (cur), "%.*s", (int)len, value);
+          if (!strcmp (cur, "SECTION"))
+            sec[0] = '\0';
+          else if ((!strcmp (sec, "BLOCKS") || !strcmp (sec, "ENTITIES"))
+                   && strcmp (cur, "BLOCK") && strcmp (cur, "ENDBLK")
+                   && strcmp (cur, "ENDSEC") && strcmp (cur, "EOF"))
+            dxf_list_add (f->types, sizeof (f->types), value, len);
+        }
+      else if (code == 2 && !strcmp (cur, "SECTION") && !sec[0])
+        {
+          snprintf (sec, sizeof (sec), "%.*s", (int)len, value);
+          dxf_list_add (f->sections, sizeof (f->sections), value, len);
+        }
+      else if (code == 2 && !strcmp (cur, "LAYER") && !strcmp (sec, "TABLES"))
+        dxf_list_add (f->layers, sizeof (f->layers), value, len);
+      else if (code == 9)
+        prev_code = dxf_is (value, len, "$ACADMAINTVER") ? 9 : -1;
+      else if (prev_code == 9 && (code == 70 || code == 90))
+        {
+          f->maintver = strtol (value, NULL, 10);
+          prev_code = -1;
+        }
+      else if (code == 5 && !strcmp (cur, "VIEWPORT"))
+        snprintf (vp_handle, sizeof (vp_handle), "%.*s", (int)len, value);
+      else if (code == 69 && !strcmp (cur, "VIEWPORT"))
+        {
+          char item[40];
+          snprintf (item, sizeof (item), "%s=%ld", vp_handle,
+                    strtol (value, NULL, 10));
+          dxf_list_add (f->viewports, sizeof (f->viewports), item,
+                        strlen (item));
+        }
+      else if (code == 100 && !strcmp (cur, "DIMENSION")
+               && dxf_is (value, len, "AcDbRotatedDimension"))
+        f->rotated++;
+      else if (code == 52 && !strcmp (cur, "DIMENSION"))
+        f->dim52++;
+      else if (code == 101 && !strcmp (cur, "MTEXT") && !in_mtext101)
+        {
+          in_mtext101 = 1;
+          f->mtext101++;
+        }
+    }
+}
+
+/* example_2018.dwg as DXF of each version, against AutoCAD 2018's DXF of
+   the same drawing (example_2000.dxf .. example_2018.dxf). */
+static void
+dxf_as_acad_test (void)
+{
+  static const struct
+  {
+    const char *acad;
+    Dwg_Version_Type version;
+  } t[] = { { "example_2000.dxf", R_2000 }, { "example_2004.dxf", R_2004 },
+            { "example_2007.dxf", R_2007 }, { "example_2010.dxf", R_2010 },
+            { "example_2013.dxf", R_2013 }, { "example_2018.dxf", R_2018 } };
+  unsigned i;
+  for (i = 0; i < ARRAY_SIZE (t); i++)
+    {
+      const char *v = dwg_version_type (t[i].version);
+      char *acad_text = dxf_test_data_text (t[i].acad);
+      char *ours_text = dxf_of_test_data ("example_2018.dwg", t[i].version);
+      dxf_features a, o;
+      if (!acad_text || !ours_text)
+        {
+          fail ("DXF %s: %s", v, acad_text ? "not written" : "no fixture");
+          free (acad_text);
+          free (ours_text);
+          continue;
+        }
+      dxf_features_of (acad_text, &a);
+      dxf_features_of (ours_text, &o);
+      free (acad_text);
+      free (ours_text);
+      /* the product maintenance version, AutoCAD 2018's and AutoCAD LT
+         2027's alike for r2004-r2013 */
+      if (t[i].version >= R_2004 && t[i].version < R_2018)
+        {
+          if (o.maintver == a.maintver)
+            ok ("DXF %s: $ACADMAINTVER %ld", v, o.maintver);
+          else
+            fail ("DXF %s: $ACADMAINTVER %ld, AutoCAD %ld", v, o.maintver,
+                  a.maintver);
+        }
+      /* the current layout's viewports numbered, the others off */
+      if (strEQ (o.viewports, a.viewports))
+        ok ("DXF %s: VIEWPORT ids %s", v, o.viewports);
+      else
+        fail ("DXF %s: VIEWPORT ids %s, AutoCAD %s", v, o.viewports,
+              a.viewports);
+      if (o.rotated == a.rotated && o.dim52 == a.dim52)
+        ok ("DXF %s: %u rotated dimensions, %u with 52", v, o.rotated,
+            o.dim52);
+      else
+        fail ("DXF %s: %u rotated dimensions, %u with 52, AutoCAD %u, %u", v,
+              o.rotated, o.dim52, a.rotated, a.dim52);
+      /* the embedded object only for MTEXT with columns */
+      if (o.mtext == a.mtext && o.mtext101 == a.mtext101)
+        ok ("DXF %s: %u MTEXT, %u with an embedded object", v, o.mtext,
+            o.mtext101);
+      else
+        fail ("DXF %s: %u MTEXT, %u with an embedded object, AutoCAD %u, %u",
+              v, o.mtext, o.mtext101, a.mtext, a.mtext101);
+    }
+}
+
+/* example_2018.dwg as R12 DXF, against AutoCAD 2018's (example_r12.dxf):
+   the sections, the entity types and the R12 names, and it reads back. */
+static void
+dxf_r12_test (void)
+{
+  static const char out[] = "encode_test_r12.dxf";
+  char *acad_text = dxf_test_data_text ("example_r12.dxf");
+  char *ours_text = dxf_of_test_data ("example_2018.dwg", R_12);
+  dxf_features a, o;
+  if (!acad_text || !ours_text)
+    {
+      fail ("DXF r12: %s", acad_text ? "not written" : "no fixture");
+      free (acad_text);
+      free (ours_text);
+      return;
+    }
+  dxf_features_of (acad_text, &a);
+  dxf_features_of (ours_text, &o);
+  free (acad_text);
+  if (strEQ (o.sections, a.sections))
+    ok ("DXF r12: sections %s", o.sections);
+  else
+    fail ("DXF r12: sections %s, AutoCAD %s", o.sections, a.sections);
+  if (dxf_list_same (o.types, a.types))
+    ok ("DXF r12: entity types %s", o.types);
+  else
+    fail ("DXF r12: entity types %s, AutoCAD %s", o.types, a.types);
+  if (strEQ (o.layers, a.layers))
+    ok ("DXF r12: layers %s", o.layers);
+  else
+    fail ("DXF r12: layers %s, AutoCAD %s", o.layers, a.layers);
+  {
+    Dwg_Data back = { 0 };
+    FILE *fp;
+    int error = DWG_ERR_IOERROR;
+    remove (out);
+    fp = fopen (out, "wb");
+    if (fp)
+      {
+        fwrite (ours_text, 1, strlen (ours_text), fp);
+        fclose (fp);
+        loglevel = 0; // a whole drawing
+        error = dxf_read_file (out, &back);
+        loglevel = is_make_silent () ? 0 : 3;
+      }
+    remove (out);
+    if (error >= DWG_ERR_CRITICAL)
+      fail ("DXF r12: read back: 0x%x", error);
+    else
+      ok ("DXF r12: read back, %u objects", (unsigned)back.num_objects);
+    dwg_free (&back);
+  }
+  free (ours_text);
+}
+
+/* in_dxf: an empty 1000 string of an r2007+ XRECORD, as AutoCAD's r2007+
+   DXF has them, is kept as an empty string. */
+static void
+in_dxf_empty_xdata_test (void)
+{
+  static const char dxf[]
+      = "  0\nSECTION\n  2\nHEADER\n  9\n$ACADVER\n  1\nAC1032\n"
+        "  9\n$HANDSEED\n  5\n200\n"
+        "  9\n$EXTMIN\n 10\n0.0\n 20\n0.0\n 30\n0.0\n"
+        "  9\n$EXTMAX\n 10\n100.0\n 20\n100.0\n 30\n0.0\n"
+        "  0\nENDSEC\n  0\nSECTION\n  2\nOBJECTS\n"
+        "  0\nXRECORD\n  5\n100\n330\n0\n100\nAcDbXrecord\n280\n1\n"
+        "1000\n\n1000\nx\n  0\nENDSEC\n  0\nEOF\n";
+  Dwg_Data dwg = { 0 };
+  Bit_Chain dat = { 0 };
+  const Dwg_Object_XRECORD *xrec = NULL;
+  const Dwg_Resbuf *rb;
+  unsigned n = 0, empty = 0;
+  BITCODE_BL i;
+  int error;
+  dat.chain = (unsigned char *)malloc (sizeof (dxf));
+  if (!dat.chain)
+    {
+      fail ("in_dxf empty xdata: malloc failed");
+      return;
+    }
+  memcpy (dat.chain, dxf, sizeof (dxf));
+  dat.size = sizeof (dxf) - 1;
+  loglevel = 0;
+  error = dwg_read_dxf (&dat, &dwg);
+  loglevel = is_make_silent () ? 0 : 3;
+  free (dat.chain);
+  for (i = 0; error < DWG_ERR_CRITICAL && i < dwg.num_objects; i++)
+    if (dwg.object[i].fixedtype == DWG_TYPE_XRECORD)
+      xrec = dwg.object[i].tio.object->tio.XRECORD;
+  for (rb = xrec ? xrec->xdata : NULL; rb && n < 10; rb = rb->nextrb, n++)
+    if (rb->type == 1000 && rb->value.str.u.data && !rb->value.str.size)
+      empty++;
+  if (n == 2 && empty == 1)
+    ok ("in_dxf: an empty 1000 string in an XRECORD");
+  else
+    fail ("in_dxf: XRECORD with %u xdata, %u empty strings (error 0x%x)", n,
+          empty, error);
+  dwg_free (&dwg);
 }
 
 // R2010+ TABLE -> pre-R2010 cells: text from the UTF-16LE value, merged cells
@@ -1894,6 +2270,9 @@ main (int argc, char const *argv[])
   in_json_subclass_fixed_elems_test ();
   in_json_mline_lines_test ();
   in_json_dotted_array_test ();
+  dxf_as_acad_test ();
+  dxf_r12_test ();
+  in_dxf_empty_xdata_test ();
   downconvert_TABLE_test ();
   downconvert_TABLESTYLE_test ();
   downconvert_TABLESTYLE_custom_test ();
