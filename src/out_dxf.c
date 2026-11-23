@@ -4079,6 +4079,11 @@ decl_dxf_process_INSERT (ACIDBLOCKREFERENCE)
     case DWG_TYPE_VIEWPORT:
       if (minimal)
         return 0;
+      // r12 has a single paper space: AutoCAD leaves out the viewports of
+      // the other layouts
+      if (dat->version < R_13b1 && dat->from_version >= R_13b1
+          && dxf_entity_in_pspace (obj) && !dxf_r12_in_pspace (obj))
+        return 0;
       error = dwg_dxf_VIEWPORT (dat, obj);
       if (dat->version < R_13b1 && dat->from_version >= R_13b1)
         dxf_r12_mview_eed (dat, obj);
