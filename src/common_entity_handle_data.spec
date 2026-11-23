@@ -55,10 +55,10 @@
 #endif
   SUBCLASS (AcDbEntity)
 #ifdef IS_DXF
-  // PaperSpace0 BLOCK may have entmode 0
-  if (_ent->entmode == 1 ||
-      (_ent->entmode == 0 && _ent->ownerhandle == obj->parent->header_vars.BLOCK_RECORD_PSPACE))
-    FIELD_BB (entmode, 67); // is paperspace
+  // 67 1 for the entities of every paper space layout, the current one
+  // (entmode 1) and the others (entmode 0, owned by the layout's block)
+  if (dxf_entity_in_pspace (obj))
+    VALUE_RS (1, 67);
 #endif
 
   VERSIONS (R_13b1, R_14)

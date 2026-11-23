@@ -3711,6 +3711,34 @@ dxf_variable_type_written (const Dwg_Data *restrict dwg,
   return DWG_ERR_UNHANDLEDCLASS;
 }
 
+/* Whether an r13+ entity belongs to a paper space layout, for its 67:
+   entmode 1 (the current layout), or 0 with the block of another layout as
+   its owner. */
+bool
+dxf_entity_in_pspace (const Dwg_Object *restrict obj)
+{
+  const Dwg_Data *dwg = obj->parent;
+  const Dwg_Object_Entity *ent = obj->tio.entity;
+  const Dwg_Object *blk;
+  const BITCODE_H mspace = dwg->header_vars.BLOCK_RECORD_MSPACE;
+  const BITCODE_H pspace = dwg->header_vars.BLOCK_RECORD_PSPACE;
+  BITCODE_H layout;
+  if (ent->entmode == 1)
+    return true;
+  if (ent->entmode != 0 || !ent->ownerhandle
+      || !ent->ownerhandle->absolute_ref)
+    return false;
+  if (mspace && ent->ownerhandle->absolute_ref == mspace->absolute_ref)
+    return false;
+  if (pspace && ent->ownerhandle->absolute_ref == pspace->absolute_ref)
+    return true;
+  blk = dwg_ref_object ((Dwg_Data *)dwg, ent->ownerhandle);
+  if (!blk || blk->fixedtype != DWG_TYPE_BLOCK_HEADER || !blk->tio.object)
+    return false;
+  layout = blk->tio.object->tio.BLOCK_HEADER->layout;
+  return layout && layout->absolute_ref;
+}
+
 /* Whether the DXF writer writes the object, for the entries that refer to
    it. The binary DXF writer has no unstable classes left out. */
 bool
