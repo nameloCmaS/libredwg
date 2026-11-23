@@ -3587,13 +3587,58 @@ dxf_write_unknown_entity (Bit_Chain *restrict dat,
   return error;
 }
 
+/* The class of a variable-type object, if the DXF keeps it: 0, or the error
+   for dwg_dxf_variable_type to return. */
+static int
+dxf_variable_type_class (const Dwg_Data *restrict dwg, Bit_Chain *restrict dat,
+                         const Dwg_Object *restrict obj, Dwg_Class **klassp,
+                         int *is_entityp, const bool warn)
+{
+  Dwg_Class *klass = &dwg->dwg_class[obj->type - 500];
+  int is_entity;
+  if (!klass->dxfname)
+    return DWG_ERR_INTERNALERROR;
+  is_entity = dwg_class_is_entity (klass);
+  // Only when converting a newer drawing. A R13/R14 drawing may have classes
+  // of newer AutoCAD, which are kept.
+  if (dat->version < R_2000 && dwg->header.from_version > dat->version)
+    {
+      // keep only: IMAGE, LWPOLYLINE, HATCH
+      if (is_entity && strNE (klass->dxfname, "IMAGE")
+          && strNEc (klass->dxfname, "LWPOLYLINE")
+          && strNEc (klass->dxfname, "HATCH"))
+        {
+          if (warn)
+            LOG_WARN ("Skip %s", klass->dxfname);
+          return DWG_ERR_UNHANDLEDCLASS;
+        }
+      // keep only: DICTIONARYVAR, MATERIAL, RASTERVARIABLES, IMAGEDEF,
+      // IMAGEDEF_REACTOR, XRECORD, IDBUFFER
+      else if (!is_entity && strNEc (klass->dxfname, "DICTIONARYVAR")
+               && strNEc (klass->dxfname, "MATERIAL")
+               && strNEc (klass->dxfname, "RASTERVARIABLES")
+               && strNEc (klass->dxfname, "IDBUFFER")
+               && strNEc (klass->dxfname, "IMAGEDEF")
+               && strNEc (klass->dxfname, "IMAGEDEF_REACTOR")
+               && strNEc (klass->dxfname, "XRECORD"))
+        {
+          if (warn)
+            LOG_WARN ("Skip %s", klass->dxfname);
+          return DWG_ERR_UNHANDLEDCLASS;
+        }
+    }
+  *klassp = klass;
+  *is_entityp = is_entity;
+  return 0;
+}
+
 /* returns 0 on success
  */
 static int
 dwg_dxf_variable_type (const Dwg_Data *restrict dwg, Bit_Chain *restrict dat,
                        Dwg_Object *restrict obj)
 {
-  int i;
+  int i, error;
   Dwg_Class *klass;
   int is_entity;
 
@@ -3608,46 +3653,74 @@ dwg_dxf_variable_type (const Dwg_Data *restrict dwg, Bit_Chain *restrict dat,
     }
   if (obj->fixedtype == DWG_TYPE_UNKNOWN_OBJ)
     return DWG_ERR_UNHANDLEDCLASS;
+  error = dxf_variable_type_class (dwg, dat, obj, &klass, &is_entity, true);
+  if (error)
+    return error;
 
-  klass = &dwg->dwg_class[i];
-  if (!klass || !klass->dxfname)
-    return DWG_ERR_INTERNALERROR;
-  is_entity = dwg_class_is_entity (klass);
-  // Only when converting a newer drawing. A R13/R14 drawing may have classes
-  // of newer AutoCAD, which are kept.
-  if (dat->version < R_2000 && dwg->header.from_version > dat->version)
-    {
-      // keep only: IMAGE, LWPOLYLINE, HATCH
-      if (is_entity && strNE (klass->dxfname, "IMAGE")
-          && strNEc (klass->dxfname, "LWPOLYLINE")
-          && strNEc (klass->dxfname, "HATCH"))
-        {
-          LOG_WARN ("Skip %s", klass->dxfname);
-          return DWG_ERR_UNHANDLEDCLASS;
-        }
-      // keep only: DICTIONARYVAR, MATERIAL, RASTERVARIABLES, IMAGEDEF,
-      // IMAGEDEF_REACTOR, XRECORD, IDBUFFER
-      else if (!is_entity && strNEc (klass->dxfname, "DICTIONARYVAR")
-               && strNEc (klass->dxfname, "MATERIAL")
-               && strNEc (klass->dxfname, "RASTERVARIABLES")
-               && strNEc (klass->dxfname, "IDBUFFER")
-               && strNEc (klass->dxfname, "IMAGEDEF")
-               && strNEc (klass->dxfname, "IMAGEDEF_REACTOR")
-               && strNEc (klass->dxfname, "XRECORD"))
-        {
-          LOG_WARN ("Skip %s", klass->dxfname);
-          return DWG_ERR_UNHANDLEDCLASS;
-        }
-    }
+  // if (!is_entity)
+  //  fprintf(dat->fh, "  0\r\n%s\r\n", dxfname);
 
-    // if (!is_entity)
-    //  fprintf(dat->fh, "  0\r\n%s\r\n", dxfname);
-
-    // clang-format off
+  // clang-format off
   #include "classes.inc"
   // clang-format on
 
   return DWG_ERR_UNHANDLEDCLASS;
+}
+
+/* The writers in dxf_variable_type_written's class dispatcher. */
+static int
+dxf_written_stub (Bit_Chain *restrict dat, const Dwg_Object *restrict obj)
+{
+  (void)dat;
+  (void)obj;
+  return 0;
+}
+
+/* 0 if dwg_dxf_variable_type writes the object: its checks and class
+   dispatcher, with dxf_written_stub as the writers. */
+static int
+dxf_variable_type_written (const Dwg_Data *restrict dwg,
+                           Bit_Chain *restrict dat, Dwg_Object *restrict obj)
+{
+  int i, error;
+  Dwg_Class *klass;
+  int is_entity;
+
+  i = obj->type - 500;
+  if (i < 0 || i >= dwg->num_classes)
+    return DWG_ERR_INVALIDTYPE;
+  if (obj->fixedtype == DWG_TYPE_UNKNOWN_ENT)
+    return 0;
+  if (obj->fixedtype == DWG_TYPE_UNKNOWN_OBJ)
+    return DWG_ERR_UNHANDLEDCLASS;
+  error = dxf_variable_type_class (dwg, dat, obj, &klass, &is_entity, false);
+  if (error)
+    return error;
+
+  // without the class warnings, which dwg_dxf_variable_type gives
+#  define IS_PRINT
+#  undef DWG_FUNC_N
+#  define DWG_FUNC_N(ACTION, name) dxf_written_stub
+  // clang-format off
+  #include "classes.inc"
+  // clang-format on
+#  undef DWG_FUNC_N
+#  define DWG_FUNC_N(ACTION, name) _DWG_FUNC_N (ACTION, name)
+#  undef IS_PRINT
+
+  return DWG_ERR_UNHANDLEDCLASS;
+}
+
+/* Whether the DXF writer writes the object, for the entries that refer to
+   it. The binary DXF writer has no unstable classes left out. */
+bool
+dxf_has_object (Bit_Chain *restrict dat, const Dwg_Object *restrict obj)
+{
+  if (!obj || obj->fixedtype == DWG_TYPE_UNKNOWN_OBJ)
+    return false;
+  if (obj->type < 500 || dat->opts & DWG_OPTS_DXFB)
+    return true;
+  return !dxf_variable_type_written (obj->parent, dat, (Dwg_Object *)obj);
 }
 
 /* process unsorted vertices until SEQEND. A pre-R13 target uses the vertex

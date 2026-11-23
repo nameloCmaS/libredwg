@@ -2788,13 +2788,14 @@ DWG_OBJECT (DICTIONARY)
               dxf = 360;
           }
         {
-          // No entry for an object not written to the DXF (missing, or
-          // of an undecoded class): AUDIT reports each as erased.
+          // No entry for an object not written to the DXF (missing, of
+          // an undecoded class, or of a class left out of the DXF): AUDIT
+          // reports each as erased.
           Dwg_Object *_item
               = _obj->itemhandles[rcount1]
                     ? dwg_ref_object (dwg, _obj->itemhandles[rcount1])
                     : NULL;
-          if (!_item || _item->fixedtype == DWG_TYPE_UNKNOWN_OBJ)
+          if (!dxf_has_object (dat, _item))
             continue;
         }
         FIELD_T (texts[rcount1], 3);
@@ -2848,13 +2849,14 @@ DWG_OBJECT (DICTIONARYWDFLT)
       {
         int dxf = FIELD_VALUE (is_hardowner) & 1 ? 360 : 350;
         {
-          // No entry for an object not written to the DXF (missing, or
-          // of an undecoded class): AUDIT reports each as erased.
+          // No entry for an object not written to the DXF (missing, of
+          // an undecoded class, or of a class left out of the DXF): AUDIT
+          // reports each as erased.
           Dwg_Object *_item
               = _obj->itemhandles[rcount1]
                     ? dwg_ref_object (dwg, _obj->itemhandles[rcount1])
                     : NULL;
-          if (!_item || _item->fixedtype == DWG_TYPE_UNKNOWN_OBJ)
+          if (!dxf_has_object (dat, _item))
             continue;
         }
         FIELD_T (texts[rcount1], 3);
