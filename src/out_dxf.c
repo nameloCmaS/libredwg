@@ -2318,6 +2318,12 @@ dxf_cvt_tablerecord (Bit_Chain *restrict dat, const Dwg_Object *restrict obj,
           else if (dat->from_version && dat->from_version < R_2000
                    && dat->version >= R_2000 && strEQc (value, "*ACTIVE"))
             fprintf (dat->fh, "%3i\r\n*Active\r\n", dxf);
+          // a layer name of r2007+ without its leading '*' in older
+          // releases (*ADSK_SYSTEM_LIGHTS), as AutoCAD writes it
+          else if (obj->fixedtype == DWG_TYPE_LAYER
+                   && dat->from_version >= R_2007 && dat->version < R_2007
+                   && value[0] == '*' && value[1])
+            fprintf (dat->fh, "%3i\r\n%s\r\n", dxf, value + 1);
           else
             fprintf (dat->fh, "%3i\r\n%s\r\n", dxf, value);
         }

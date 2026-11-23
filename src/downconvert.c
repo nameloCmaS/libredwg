@@ -983,6 +983,33 @@ downconvert_MLEADERSTYLE (Dwg_Object *restrict obj)
   oo->eed[idx].data = NULL;
 }
 
+/* A layer name of r2007+ may start with '*' (the system layer
+ *ADSK_SYSTEM_LIGHTS); AutoCAD drops it when saving to an older release. */
+void
+downconvert_layer_name (Dwg_Object *restrict obj)
+{
+  Dwg_Object_LAYER *_obj;
+  if (obj->fixedtype != DWG_TYPE_LAYER || !obj->tio.object)
+    return;
+  _obj = obj->tio.object->tio.LAYER;
+  if (!_obj->name)
+    return;
+  if (IS_FROM_TU_DWG (obj->parent))
+    {
+      BITCODE_TU wname = (BITCODE_TU)(void *)_obj->name;
+      if (wname[0] != '*' || !wname[1])
+        return;
+      memmove (wname, wname + 1, bit_wcs2len (wname) * sizeof (*wname));
+    }
+  else
+    {
+      if (_obj->name[0] != '*' || !_obj->name[1])
+        return;
+      memmove (_obj->name, _obj->name + 1, strlen (_obj->name));
+    }
+  LOG_TRACE ("LAYER.name: the leading '*' dropped\n");
+}
+
 /* Objects whose format changed in r2010 (VISUALSTYLE, SUN) carry, when
    AutoCAD saves them to an older release, the ACAD EED
    1000 "AcDbSavedByObjectVersion", 1070 0. */

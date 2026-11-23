@@ -3190,6 +3190,13 @@ dwg_encode (Dwg_Data *restrict dwg, Bit_Chain *restrict dat)
             downconvert_saved_by_version (obj);
         }
     }
+  if (dwg->header.version < R_2007 && dwg->header.version >= R_13b1
+      && dwg->header.from_version >= R_2007 && !(dwg->opts & DWG_OPTS_IN))
+    {
+      for (i = 0; i < dwg->num_objects; i++)
+        if (dwg->object[i].fixedtype == DWG_TYPE_LAYER)
+          downconvert_layer_name (&dwg->object[i]);
+    }
   if (dwg_supports_eed (dwg) && dwg->header.version <= R_2000
       && dwg->header.version >= R_2000b && dwg->header.from_version >= R_2004a
       && !(dwg->opts & DWG_OPTS_IN))
