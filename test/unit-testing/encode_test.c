@@ -876,7 +876,55 @@ typedef struct
   unsigned dim52;      // 52 groups in DIMENSIONs
   unsigned mtext;      // MTEXTs
   unsigned mtext101;   // MTEXTs with an embedded object
+  unsigned pspace;     // entities with 67 1
+  unsigned vports;     // VIEWPORTs
+  unsigned dangling;   // DICTIONARY entries to objects not in the DXF
 } dxf_features;
+
+/* The DICTIONARY entries (350, 360) to a handle no object of the DXF has. */
+static unsigned
+dxf_dangling_entries (const char *text)
+{
+  const char *p = text, *value;
+  size_t len, nhandles = 0, cap = 0;
+  int code;
+  unsigned long *handles = NULL;
+  unsigned dangling = 0;
+  char cur[40] = "";
+  while (dxf_group (&p, &code, &value, &len))
+    if (code == 5 || code == 105)
+      {
+        if (nhandles == cap)
+          {
+            unsigned long *h;
+            cap = cap ? 2 * cap : 1024;
+            h = (unsigned long *)realloc (handles, cap * sizeof (*h));
+            if (!h)
+              {
+                free (handles);
+                return 0;
+              }
+            handles = h;
+          }
+        handles[nhandles++] = strtoul (value, NULL, 16);
+      }
+  p = text;
+  while (dxf_group (&p, &code, &value, &len))
+    if (code == 0)
+      snprintf (cur, sizeof (cur), "%.*s", (int)len, value);
+    else if ((code == 350 || code == 360) && !strncmp (cur, "DICTIONARY", 10))
+      {
+        const unsigned long h = strtoul (value, NULL, 16);
+        size_t i;
+        for (i = 0; i < nhandles; i++)
+          if (handles[i] == h)
+            break;
+        if (h && i == nhandles)
+          dangling++;
+      }
+  free (handles);
+  return dangling;
+}
 
 static void
 dxf_features_of (const char *text, dxf_features *f)
@@ -888,12 +936,15 @@ dxf_features_of (const char *text, dxf_features *f)
   int in_mtext101 = 0;
   memset (f, 0, sizeof (dxf_features));
   f->maintver = -1;
+  f->dangling = dxf_dangling_entries (text);
   while (dxf_group (&p, &code, &value, &len))
     {
       if (code == 0)
         {
           if (dxf_is (value, len, "MTEXT"))
             f->mtext++;
+          else if (dxf_is (value, len, "VIEWPORT"))
+            f->vports++;
           in_mtext101 = 0;
           snprintf (cur, sizeof (cur), "%.*s", (int)len, value);
           if (!strcmp (cur, "SECTION"))
@@ -932,6 +983,8 @@ dxf_features_of (const char *text, dxf_features *f)
         f->rotated++;
       else if (code == 52 && !strcmp (cur, "DIMENSION"))
         f->dim52++;
+      else if (code == 67 && strtol (value, NULL, 10) == 1)
+        f->pspace++;
       else if (code == 101 && !strcmp (cur, "MTEXT") && !in_mtext101)
         {
           in_mtext101 = 1;
@@ -999,6 +1052,21 @@ dxf_as_acad_test (void)
       else
         fail ("DXF %s: %u MTEXT, %u with an embedded object, AutoCAD %u, %u",
               v, o.mtext, o.mtext101, a.mtext, a.mtext101);
+      /* 67 1 for the entities of every paper space layout */
+      if (o.pspace == a.pspace)
+        ok ("DXF %s: %u entities with 67 1", v, o.pspace);
+      else
+        fail ("DXF %s: %u entities with 67 1, AutoCAD %u", v, o.pspace,
+              a.pspace);
+      if (dxf_list_same (o.layers, a.layers))
+        ok ("DXF %s: layers %s", v, o.layers);
+      else
+        fail ("DXF %s: layers %s, AutoCAD %s", v, o.layers, a.layers);
+      if (!o.dangling)
+        ok ("DXF %s: no DICTIONARY entry to an absent object", v);
+      else
+        fail ("DXF %s: %u DICTIONARY entries to absent objects", v,
+              o.dangling);
     }
 }
 
@@ -1033,6 +1101,11 @@ dxf_r12_test (void)
     ok ("DXF r12: layers %s", o.layers);
   else
     fail ("DXF r12: layers %s, AutoCAD %s", o.layers, a.layers);
+  /* the viewports of the current layout only */
+  if (o.vports == a.vports)
+    ok ("DXF r12: %u VIEWPORTs", o.vports);
+  else
+    fail ("DXF r12: %u VIEWPORTs, AutoCAD %u", o.vports, a.vports);
   {
     Dwg_Data back = { 0 };
     FILE *fp;
@@ -2335,6 +2408,7 @@ typedef struct
   unsigned pab_deps;      // owned params in the aligned dim action body
   unsigned layer_mat;     // LAYERs whose material is a MATERIAL
   unsigned dimstyle_eed;  // DIMSTYLEs with EED
+  unsigned layer_star;    // LAYERs named with a leading '*'
   unsigned vx;            // VX_TABLE_RECORDs
   unsigned vx_vports;     // the sum of their VIEWPORT handles
 } older_counts;
@@ -2369,6 +2443,11 @@ older_release_count (Dwg_Data *dwg, older_counts *c)
                                   : NULL;
             if (mat && mat->fixedtype == DWG_TYPE_MATERIAL)
               c->layer_mat++;
+            if (layer->name
+                && (dwg->header.version >= R_2007
+                        ? ((BITCODE_TU)(void *)layer->name)[0] == '*'
+                        : layer->name[0] == '*'))
+              c->layer_star++;
           }
           break;
         case DWG_TYPE_DIMSTYLE:
@@ -2488,6 +2567,14 @@ older_release_test (void)
       else
         fail ("older release %s: %u DIMSTYLE(s) with EED, AutoCAD %u", v,
               o.dimstyle_eed, a.dimstyle_eed);
+      /* *ADSK_SYSTEM_LIGHTS without its '*' before r2007 */
+      if (o.layer_star == a.layer_star)
+        ok ("older release %s: %u LAYER name(s) with a leading '*'", v,
+            o.layer_star);
+      else
+        fail ("older release %s: %u LAYER name(s) with a leading '*', "
+              "AutoCAD %u",
+              v, o.layer_star, a.layer_star);
       if (t[i].version == R_2000)
         {
           /* an empty VX record, then one per VIEWPORT entity */
