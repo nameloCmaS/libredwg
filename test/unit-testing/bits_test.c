@@ -7,6 +7,7 @@
 #include "reedsolomon.h"
 #include <string.h>
 #include <stdlib.h>
+#include <float.h>
 #include "tests_common.h"
 #include <assert.h>
 
@@ -1804,6 +1805,109 @@ in_hexbin_tests (void)
   free (dat.chain);
 }
 
+/* bit_write_DD writes the compact mode 0 for the exact default only, so a
+   value next to the default reads back unchanged. bit_eq_DD agrees. */
+static void
+bit_DD_exact_tests (void)
+{
+  Bit_Chain dat;
+  const double def = 1.0;
+  const double next = 1.0 + DBL_EPSILON; // 1.0000000000000002
+  double back;
+  bitprepare (&dat, 16);
+  bit_write_DD (&dat, def, def);
+  if (bit_position (&dat) == 2)
+    pass ();
+  else
+    fail ("bit_write_DD of the default: %" PRIuSIZE " bits",
+          bit_position (&dat));
+  bit_set_position (&dat, 0);
+  bit_write_DD (&dat, next, def);
+  bit_set_position (&dat, 0);
+  back = bit_read_DD (&dat, def);
+  if (memcmp (&back, &next, sizeof (double)) == 0)
+    ok ("bit_write_DD: a value next to the default reads back exactly");
+  else
+    fail ("bit_write_DD: %.17g reads back as %.17g", next, back);
+  if (bit_eq_DD (def, def) && !bit_eq_DD (next, def))
+    ok ("bit_eq_DD: bit-exact");
+  else
+    fail ("bit_eq_DD (%.17g, %.17g)", next, def);
+  bitfree (&dat);
+}
+
+/* bit_write_UMC writes only the bytes a value needs, as AutoCAD writes the
+   handle map. */
+static void
+bit_write_UMC_minimal_tests (void)
+{
+  static const struct
+  {
+    BITCODE_UMC value;
+    unsigned len;
+    unsigned char bytes[2];
+  } t[] = { { 0, 1, { 0x00 } },
+            { 1, 1, { 0x01 } },
+            { 0x3f, 1, { 0x3f } },
+            { 0x80, 2, { 0x80, 0x01 } },
+            { 0x1fff, 2, { 0xff, 0x3f } } };
+  unsigned i;
+  for (i = 0; i < ARRAY_SIZE (t); i++)
+    {
+      Bit_Chain dat;
+      bitprepare (&dat, 16);
+      bit_write_UMC (&dat, t[i].value);
+      if (dat.byte == t[i].len && dat.bit == 0
+          && memcmp (dat.chain, t[i].bytes, t[i].len) == 0)
+        ok ("bit_write_UMC " FORMAT_UMC ": %u byte(s)", t[i].value, t[i].len);
+      else
+        fail ("bit_write_UMC " FORMAT_UMC ": %" PRIuSIZE " bytes, %02x %02x",
+              t[i].value, dat.byte, dat.chain[0], dat.chain[1]);
+      bitfree (&dat);
+    }
+}
+
+/* Strings as AutoCAD writes them: an empty string saved from an r2007+
+   drawing to r2000 is the length 0 without a NUL, and an r2007+ TU string
+   has no NUL. */
+static void
+bit_write_T_acad_tests (void)
+{
+  static const DWGCHAR empty[] = { 0 };
+  static const DWGCHAR scale[] = { 'S', 'c', 'a', 'l', 'e', 0 };
+  Bit_Chain dat;
+  BITCODE_TU back;
+  BITCODE_BS len;
+  unsigned i = 0;
+
+  bitprepare (&dat, 32);
+  dat.from_version = R_2018;
+  dat.version = R_2000;
+  bit_write_T (&dat, (BITCODE_T)empty);
+  if (bit_position (&dat) == 2) // BS 0
+    ok ("bit_write_T: an empty r2018 string in r2000 is the length 0");
+  else
+    fail ("bit_write_T: an empty r2018 string in r2000: %" PRIuSIZE " bits",
+          bit_position (&dat));
+  bitfree (&dat);
+
+  bitprepare (&dat, 32);
+  dat.from_version = dat.version = R_2018;
+  bit_write_TU (&dat, (BITCODE_TU)scale);
+  bit_set_position (&dat, 0);
+  len = bit_read_BS (&dat);
+  bit_set_position (&dat, 0);
+  back = bit_read_TU (&dat);
+  while (back && i < 6 && back[i] == scale[i])
+    i++;
+  if (len == 5 && i == 6)
+    ok ("bit_write_TU: \"Scale\" is 5 characters, without a NUL");
+  else
+    fail ("bit_write_TU: \"Scale\" has the length %u", (unsigned)len);
+  free (back);
+  bitfree (&dat);
+}
+
 int
 main (int argc, char const *argv[])
 {
@@ -1864,6 +1968,9 @@ main (int argc, char const *argv[])
   bit_read_UMC_tests ();
   bit_read_MC_tests ();
   in_hexbin_tests ();
+  bit_DD_exact_tests ();
+  bit_write_UMC_minimal_tests ();
+  bit_write_T_acad_tests ();
 
   // Prepare the testcase
   bitchain.size = 100;

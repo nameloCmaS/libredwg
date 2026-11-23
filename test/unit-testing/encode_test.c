@@ -1873,6 +1873,384 @@ r2004_maint_version_test (void)
   free (file.chain);
 }
 
+/* A test-data drawing, decoded. */
+static int
+decode_test_data (const char *name, Dwg_Data *dwg)
+{
+  const unsigned level = loglevel;
+  Bit_Chain file;
+  int error;
+  memset (dwg, 0, sizeof (Dwg_Data));
+  if (read_test_data (name, &file))
+    return DWG_ERR_IOERROR;
+  loglevel = 0; // a whole drawing
+  error = dwg_decode (&file, dwg);
+  loglevel = level;
+  free (file.chain);
+  return error;
+}
+
+/* The encoder's output of a test-data drawing at the given version, read
+   back. */
+static int
+encode_test_data (const char *name, const Dwg_Version_Type version,
+                  Dwg_Data *back)
+{
+  const unsigned level = loglevel;
+  Bit_Chain file, out;
+  BITCODE_BL num_objects;
+  int error;
+  memset (back, 0, sizeof (Dwg_Data));
+  if (read_test_data (name, &file))
+    return DWG_ERR_IOERROR;
+  error = r2004_encode (&file, version, &out, &num_objects);
+  free (file.chain);
+  if (error >= DWG_ERR_CRITICAL || !out.chain)
+    {
+      free (out.chain);
+      return error ? error : DWG_ERR_INTERNALERROR;
+    }
+  loglevel = 0; // a whole drawing
+  error = dwg_decode (&out, back);
+  loglevel = level;
+  free (out.chain);
+  return error;
+}
+
+/* Whether an EED item is the string s. */
+static int
+eed_is_string (const Dwg_Data *dwg, const Dwg_Eed *eed, const char *s)
+{
+  const size_t len = strlen (s);
+  size_t i;
+  if (!eed->data || eed->data->code != 0)
+    return 0;
+  if (dwg->header.from_version >= R_2007)
+    {
+      if (eed->data->u.eed_0_r2007.length != len)
+        return 0;
+      for (i = 0; i < len; i++)
+        if (eed->data->u.eed_0_r2007.string[i] != (DWGCHAR)s[i])
+          return 0;
+      return 1;
+    }
+  return eed->data->u.eed_0.length == len
+         && memcmp (eed->data->u.eed_0.string, s, len) == 0;
+}
+
+/* The index of the object's EED string item s, or -1. */
+static int
+eed_find_string (const Dwg_Data *dwg, const Dwg_Object *obj, const char *s)
+{
+  BITCODE_BL i;
+  if (obj->supertype != DWG_SUPERTYPE_OBJECT || !obj->tio.object)
+    return -1;
+  for (i = 0; i < obj->tio.object->num_eed; i++)
+    if (eed_is_string (dwg, &obj->tio.object->eed[i], s))
+      return (int)i;
+  return -1;
+}
+
+/* What the older-release checks count in a drawing. */
+typedef struct
+{
+  unsigned saved_by;      // VISUALSTYLE and SUN with AcDbSavedByObjectVersion
+  unsigned assoc_version; // ASSOCACTION class_version
+  unsigned pab_deps;      // owned params in the aligned dim action body
+  unsigned layer_mat;     // LAYERs whose material is a MATERIAL
+  unsigned dimstyle_eed;  // DIMSTYLEs with EED
+  unsigned vx;            // VX_TABLE_RECORDs
+  unsigned vx_vports;     // the sum of their VIEWPORT handles
+} older_counts;
+
+static void
+older_release_count (Dwg_Data *dwg, older_counts *c)
+{
+  BITCODE_BL i;
+  memset (c, 0, sizeof (older_counts));
+  for (i = 0; i < dwg->num_objects; i++)
+    {
+      Dwg_Object *obj = &dwg->object[i];
+      switch (obj->fixedtype)
+        {
+        case DWG_TYPE_VISUALSTYLE:
+        case DWG_TYPE_SUN:
+          if (eed_find_string (dwg, obj, "AcDbSavedByObjectVersion") >= 0)
+            c->saved_by++;
+          break;
+        case DWG_TYPE_ASSOCACTION:
+          c->assoc_version = obj->tio.object->tio.ASSOCACTION->class_version;
+          break;
+        case DWG_TYPE_ASSOCALIGNEDDIMACTIONBODY:
+          c->pab_deps
+              = obj->tio.object->tio.ASSOCALIGNEDDIMACTIONBODY->pab.num_deps;
+          break;
+        case DWG_TYPE_LAYER:
+          {
+            Dwg_Object_LAYER *layer = obj->tio.object->tio.LAYER;
+            Dwg_Object *mat = layer->material
+                                  ? dwg_ref_object (dwg, layer->material)
+                                  : NULL;
+            if (mat && mat->fixedtype == DWG_TYPE_MATERIAL)
+              c->layer_mat++;
+          }
+          break;
+        case DWG_TYPE_DIMSTYLE:
+          if (obj->tio.object->num_eed)
+            c->dimstyle_eed++;
+          break;
+        case DWG_TYPE_VX_TABLE_RECORD:
+          c->vx++;
+          if (obj->tio.object->tio.VX_TABLE_RECORD->viewport)
+            c->vx_vports += (unsigned)obj->tio.object->tio.VX_TABLE_RECORD
+                                ->viewport->absolute_ref;
+          break;
+        default:
+          break;
+        }
+    }
+}
+
+/* The class names of a pre-r2007 drawing against AutoCAD's, by DXF name.
+   Returns the number of classes that differ. */
+static unsigned
+older_release_classes (const Dwg_Data *acad, const Dwg_Data *ours, char *msg,
+                       const size_t msgsize)
+{
+  unsigned bad = 0;
+  BITCODE_BS i, j;
+  msg[0] = '\0';
+  for (i = 0; i < ours->num_classes; i++)
+    {
+      const Dwg_Class *k = &ours->dwg_class[i];
+      for (j = 0; j < acad->num_classes; j++)
+        {
+          const Dwg_Class *a = &acad->dwg_class[j];
+          if (!k->dxfname || !a->dxfname || strNE (k->dxfname, a->dxfname))
+            continue;
+          if (!k->appname || !k->cppname || strNE (k->appname, a->appname)
+              || strNE (k->cppname, a->cppname))
+            {
+              if (!bad++)
+                snprintf (msg, msgsize, "%s: \"%s\" \"%s\"", k->dxfname,
+                          k->appname ? k->appname : "",
+                          k->cppname ? k->cppname : "");
+            }
+          break;
+        }
+    }
+  return bad;
+}
+
+/* example_2018.dwg saved to an older release by the encoder, against
+   AutoCAD 2018's saves of the same drawing to that release. */
+static void
+older_release_test (void)
+{
+  static const struct
+  {
+    const char *acad;
+    Dwg_Version_Type version;
+  } t[] = { { "example_2000.dwg", R_2000 },
+            { "example_2004.dwg", R_2004 },
+            { "example_2007.dwg", R_2007 },
+            { "example_2010.dwg", R_2010 },
+            { "example_2013.dwg", R_2013 } };
+  unsigned i;
+
+  loglevel = is_make_silent () ? 0 : 3; // dwg_encode resets it
+  for (i = 0; i < ARRAY_SIZE (t); i++)
+    {
+      Dwg_Data acad, ours;
+      older_counts a, o;
+      const char *v = dwg_version_type (t[i].version);
+      int error = decode_test_data (t[i].acad, &acad);
+      if (error >= DWG_ERR_CRITICAL)
+        {
+          fail ("older release: %s not read (0x%x)", t[i].acad, error);
+          dwg_free (&acad);
+          continue;
+        }
+      error = encode_test_data ("example_2018.dwg", t[i].version, &ours);
+      if (error >= DWG_ERR_CRITICAL)
+        {
+          fail ("older release: example_2018.dwg as %s not read back (0x%x)",
+                v, error);
+          dwg_free (&acad);
+          dwg_free (&ours);
+          continue;
+        }
+      older_release_count (&acad, &a);
+      older_release_count (&ours, &o);
+
+      /* their format changed in r2010: the ACAD EED with the saved-by
+         version */
+      if (o.saved_by == a.saved_by)
+        ok ("older release %s: %u VISUALSTYLE/SUN saved by version", v,
+            o.saved_by);
+      else
+        fail ("older release %s: %u VISUALSTYLE/SUN saved by version, "
+              "AutoCAD %u",
+              v, o.saved_by, a.saved_by);
+      /* r2010 and older: ASSOCACTION class_version 1, its params in the
+         action body */
+      if (o.assoc_version == a.assoc_version && o.pab_deps == a.pab_deps)
+        ok ("older release %s: ASSOCACTION class_version %u, %u action "
+            "body param(s)",
+            v, o.assoc_version, o.pab_deps);
+      else
+        fail ("older release %s: ASSOCACTION class_version %u, %u action "
+              "body param(s), AutoCAD %u, %u",
+              v, o.assoc_version, o.pab_deps, a.assoc_version, a.pab_deps);
+      if (o.layer_mat == a.layer_mat)
+        ok ("older release %s: %u LAYER material(s)", v, o.layer_mat);
+      else
+        fail ("older release %s: %u LAYER material(s), AutoCAD %u", v,
+              o.layer_mat, a.layer_mat);
+      if (o.dimstyle_eed == a.dimstyle_eed)
+        ok ("older release %s: %u DIMSTYLE(s) with EED", v, o.dimstyle_eed);
+      else
+        fail ("older release %s: %u DIMSTYLE(s) with EED, AutoCAD %u", v,
+              o.dimstyle_eed, a.dimstyle_eed);
+      if (t[i].version == R_2000)
+        {
+          /* an empty VX record, then one per VIEWPORT entity */
+          if (o.vx == a.vx && o.vx_vports == a.vx_vports)
+            ok ("older release %s: %u VX_TABLE_RECORDs", v, o.vx);
+          else
+            fail ("older release %s: %u VX_TABLE_RECORDs (VIEWPORTs %u), "
+                  "AutoCAD %u (%u)",
+                  v, o.vx, o.vx_vports, a.vx, a.vx_vports);
+        }
+      if (t[i].version < R_2007)
+        {
+          /* TV strings from the r2018 TU strings. AutoCAD keeps the
+             FINGERPRINTGUID; the VERSIONGUID can change with each save. */
+          char msg[200];
+          const char *fg = ours.header_vars.FINGERPRINTGUID;
+          const char *vg = ours.header_vars.VERSIONGUID;
+          if (fg && vg && acad.header_vars.FINGERPRINTGUID
+              && strEQ (fg, acad.header_vars.FINGERPRINTGUID)
+              && strlen (vg) == 38 && vg[0] == '{' && vg[37] == '}')
+            ok ("older release %s: FINGERPRINTGUID and VERSIONGUID", v);
+          else
+            fail ("older release %s: FINGERPRINTGUID \"%s\", VERSIONGUID "
+                  "\"%s\"",
+                  v, fg ? fg : "", vg ? vg : "");
+          if (older_release_classes (&acad, &ours, msg, sizeof (msg)))
+            fail ("older release %s: class names %s", v, msg);
+          else
+            ok ("older release %s: class names", v);
+        }
+      dwg_free (&acad);
+      dwg_free (&ours);
+    }
+}
+
+/* An r2000 PROXY_OBJECT from an r2004+ drawing: the ACAD EED 1000
+   "AcRTDxfName", 1000 <the class's DXF name>, as AutoCAD writes it. */
+static void
+older_release_proxy_test (void)
+{
+  Dwg_Data ours;
+  BITCODE_BL i;
+  unsigned proxies = 0, named = 0;
+  int error;
+
+  loglevel = is_make_silent () ? 0 : 3; // dwg_encode resets it
+  error = encode_test_data ("2018/Constraints.dwg", R_2000, &ours);
+  if (error >= DWG_ERR_CRITICAL)
+    {
+      fail ("older release proxy: 2018/Constraints.dwg as r2000 not read "
+            "back (0x%x)",
+            error);
+      dwg_free (&ours);
+      return;
+    }
+  for (i = 0; i < ours.num_objects; i++)
+    {
+      const Dwg_Object *obj = &ours.object[i];
+      const Dwg_Object_PROXY_OBJECT *proxy;
+      const Dwg_Class *klass;
+      int k;
+      if (obj->fixedtype != DWG_TYPE_PROXY_OBJECT)
+        continue;
+      proxies++;
+      proxy = obj->tio.object->tio.PROXY_OBJECT;
+      klass
+          = proxy->class_id >= 500 && proxy->class_id - 500 < ours.num_classes
+                ? &ours.dwg_class[proxy->class_id - 500]
+                : NULL;
+      k = eed_find_string (&ours, obj, "AcRTDxfName");
+      if (klass && klass->dxfname && k >= 0
+          && (BITCODE_BL)k + 1 < obj->tio.object->num_eed
+          && eed_is_string (&ours, &obj->tio.object->eed[k + 1],
+                            klass->dxfname))
+        named++;
+    }
+  if (proxies && named == proxies)
+    ok ("older release proxy: %u r2000 PROXY_OBJECTs with their DXF name",
+        proxies);
+  else
+    fail ("older release proxy: %u of %u r2000 PROXY_OBJECTs with their "
+          "DXF name",
+          named, proxies);
+  dwg_free (&ours);
+}
+
+/* In r2007+ the header has no unknown_54 .. unknown_57: their bits are the
+   start of the string stream. */
+static void
+header_unknown_54_test (void)
+{
+  static const char *const acad[] = { "example_2007.dwg", "example_2010.dwg",
+                                      "example_2013.dwg", "example_2018.dwg" };
+  unsigned i;
+  for (i = 0; i < ARRAY_SIZE (acad); i++)
+    {
+      Dwg_Data dwg;
+      const int error = decode_test_data (acad[i], &dwg);
+      const Dwg_Header_Variables *h = &dwg.header_vars;
+      if (error >= DWG_ERR_CRITICAL)
+        fail ("header: %s not read (0x%x)", acad[i], error);
+      else if (h->unknown_54 || h->unknown_55 || h->unknown_56
+               || h->unknown_57)
+        fail ("header: %s has unknown_54 .. 57 %u %u %u %u", acad[i],
+              h->unknown_54, h->unknown_55, h->unknown_56, h->unknown_57);
+      else
+        ok ("header: %s has no unknown_54 .. 57", acad[i]);
+      dwg_free (&dwg);
+    }
+}
+
+/* dwg_strip_mtext: the plain text of AutoCAD's MTEXT, for a single-line
+   ATTRIB/ATTDEF in an older release and the r12 DXF TEXT. */
+static void
+strip_mtext_test (void)
+{
+  static const char *const t[][2] = {
+    { "{\\fArial|b0|i0|c0|p34;Hello}\\PWorld", "Hello World" },
+    { "a~b\\Nc", "a b c" },
+    { "\\{x\\}\\\\", "{x}\\" },
+    { "caf\\U+00E9", "caf\xc3\xa9" },
+    { "\\S1^2; \\S3#4;", "1/2 3/4" },
+    { "\\LUnder\\l \\H2.5x;\\C1;Big", "Under Big" },
+    { "\\M+N8140x", "?x" },
+    { "", "" },
+  };
+  unsigned i;
+  for (i = 0; i < ARRAY_SIZE (t); i++)
+    {
+      char *s = dwg_strip_mtext (t[i][0]);
+      if (s && strEQ (s, t[i][1]))
+        ok ("dwg_strip_mtext \"%s\"", t[i][0]);
+      else
+        fail ("dwg_strip_mtext \"%s\": \"%s\", not \"%s\"", t[i][0],
+              s ? s : "(null)", t[i][1]);
+      free (s);
+    }
+}
+
 int
 main (int argc, char const *argv[])
 {
@@ -1904,5 +2282,9 @@ main (int argc, char const *argv[])
   encode_r2007_test ();
   r2004_container_test ();
   r2004_maint_version_test ();
+  older_release_test ();
+  older_release_proxy_test ();
+  header_unknown_54_test ();
+  strip_mtext_test ();
   return failed;
 }
