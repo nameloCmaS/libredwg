@@ -64,6 +64,9 @@ void downconvert_TABLE (Dwg_Object *restrict obj);
 void downconvert_TABLESTYLE (Dwg_Object *restrict obj);
 void upconvert_TABLESTYLE (Dwg_Object *restrict obj);
 void downconvert_MLEADERSTYLE (Dwg_Object *restrict obj);
+void downconvert_saved_by_version (Dwg_Object *restrict obj);
+void downconvert_layer_name (Dwg_Object *restrict obj);
+void downconvert_proxy_dxfname (Dwg_Object *restrict obj);
 void downconvert_DIMSTYLE (Bit_Chain *restrict dat,
                            Dwg_Object *restrict obj);
 void fix_mtext_hatch (Dwg_Data *restrict dwg);

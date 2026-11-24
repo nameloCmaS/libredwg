@@ -65,6 +65,9 @@ Dwg_Object_APPID *dwg_add_APPID (Dwg_Data *restrict dwg,
                                  const char *restrict name);
 Dwg_Object_VX_TABLE_RECORD *dwg_add_VX (Dwg_Data *restrict dwg,
                                         const char *restrict name);
+static void downconvert_VX (Dwg_Data *restrict dwg);
+static void downconvert_subentity_links (Dwg_Data *restrict dwg);
+static void downconvert_assoc_pab (Dwg_Data *restrict dwg);
 BITCODE_RLL dwg_obj_generic_handlevalue (void *_obj);
 Dwg_Object *dwg_obj_generic_to_object (const void *restrict obj,
                                        int *restrict error);
@@ -2484,8 +2487,11 @@ encode_classes (Dwg_Data *restrict dwg, Bit_Chain *restrict dat)
         Dwg_Class *klass = &dwg->dwg_class[j];
         bit_write_BS (dat, klass->number);
         bit_write_BS (dat, klass->proxyflag);
-        bit_write_TV (dat, klass->appname);
-        bit_write_TV (dat, klass->cppname);
+        // appname and cppname are TU from an r2007+ DWG: bit_write_T
+        // converts them. dxfname is always TV (dxfname_u holds the TU
+        // copy).
+        bit_write_T (dat, klass->appname);
+        bit_write_T (dat, klass->cppname);
         bit_write_TV (dat, klass->dxfname);
         bit_write_B (dat, klass->is_zombie);
         bit_write_BS (dat, klass->item_class_id);
@@ -3056,6 +3062,8 @@ dwg_encode (Dwg_Data *restrict dwg, Bit_Chain *restrict dat)
     LOG_TRACE ("Encode version %s (%s)\n",
                dwg_version_codes (dwg->header.version),
                dwg_version_type (dwg->header.version));
+  if (dwg->header.version < R_2013b && dwg->header.from_version >= R_2013b)
+    downconvert_assoc_pab (dwg);
 
 #ifdef ENCODE_UNKNOWN_AS_DUMMY
   // We cannot write unknown_bits into another version, or when it's coming
@@ -3166,6 +3174,36 @@ dwg_encode (Dwg_Data *restrict dwg, Bit_Chain *restrict dat)
           else if (obj->fixedtype == DWG_TYPE_DIMSTYLE)
             downconvert_DIMSTYLE (dat, obj); // so far Annotative only
         }
+    }
+  /* VISUALSTYLE and SUN: their format changed in r2010, and AutoCAD 2018
+     gives them the saved-by EED in every older release (r2000-r2013) */
+  if (dwg_supports_eed (dwg)
+      && ((dwg->header.version < R_2010 && dwg->header.from_version >= R_2010)
+          || (dwg->header.version < R_2018
+              && dwg->header.from_version >= R_2018)))
+    {
+      for (i = 0; i < dwg->num_objects; i++)
+        {
+          Dwg_Object *obj = &dwg->object[i];
+          if (obj->fixedtype == DWG_TYPE_VISUALSTYLE
+              || obj->fixedtype == DWG_TYPE_SUN)
+            downconvert_saved_by_version (obj);
+        }
+    }
+  if (dwg->header.version < R_2007 && dwg->header.version >= R_13b1
+      && dwg->header.from_version >= R_2007 && !(dwg->opts & DWG_OPTS_IN))
+    {
+      for (i = 0; i < dwg->num_objects; i++)
+        if (dwg->object[i].fixedtype == DWG_TYPE_LAYER)
+          downconvert_layer_name (&dwg->object[i]);
+    }
+  if (dwg_supports_eed (dwg) && dwg->header.version <= R_2000
+      && dwg->header.version >= R_2000b && dwg->header.from_version >= R_2004a
+      && !(dwg->opts & DWG_OPTS_IN))
+    {
+      for (i = 0; i < dwg->num_objects; i++)
+        if (dwg->object[i].fixedtype == DWG_TYPE_PROXY_OBJECT)
+          downconvert_proxy_dxfname (&dwg->object[i]);
     }
   // r2000 has no MATERIAL fields, only EED. Add the APPIDs and EEDs before
   // the tables are written.
@@ -3636,6 +3674,10 @@ dwg_encode (Dwg_Data *restrict dwg, Bit_Chain *restrict dat)
           }
         else
           dwg->header.num_sections = 6;
+        // HEADER.sections of an r2004+ source counts its section map (e.g.
+        // 29), not the section locators of the r13-r2000 file header, and
+        // would override num_sections in dwg_sections_init.
+        dwg->header.sections = dwg->header.num_sections;
         // minimal DXF:
         // if (dwg->opts & (DWG_OPTS_INDXF | DWG_OPTS_MINIMAL)
         //    && (!dwg->header_vars.HANDSEED ||
@@ -3779,6 +3821,12 @@ dwg_encode (Dwg_Data *restrict dwg, Bit_Chain *restrict dat)
         if (obj)
           dwg->header_vars.VX_CONTROL_OBJECT
               = dwg_add_handleref (dwg, 3, obj->handle.value, obj);
+      }
+    if (dwg->header.version >= R_13b1 && dwg->header.version <= R_2000
+        && dwg->header.from_version >= R_2004)
+      {
+        downconvert_VX (dwg);
+        downconvert_subentity_links (dwg);
       }
     VERSIONS (R_13b1, R_2000)
     {
@@ -5032,6 +5080,359 @@ r2007_written:
 // clang-format off
 AFL_GCC_POP
 
+/* r13-r2000 from r2004+: the r2004+ drawing has no VX table, but AutoCAD
+   writes one into r2000: an empty record, then one record per VIEWPORT
+   entity of the current paper space, the overall viewport's named "1" and pointed to by the header
+   VX_TABLE_RECORD; each VIEWPORT points back with vport_entity_header; the
+   detail records are linked with prev_entry. AutoCAD rejects an r2000 file
+   of such a drawing without it. */
+static void
+downconvert_VX (Dwg_Data *restrict dwg)
+{
+  const Dwg_Version_Type version = dwg->header.version;
+  Dwg_Object *ctrl = dwg_find_first_type (dwg, DWG_TYPE_VX_CONTROL);
+  Dwg_Object *ps = dwg_paper_space_object (dwg);
+  BITCODE_RLL overall = 0, *vps = NULL, *recs = NULL;
+  BITCODE_BL num = 0, i;
+  Dwg_Object_VX_TABLE_RECORD *vx;
+  if (!ctrl || !ctrl->tio.object || !ctrl->tio.object->tio.VX_CONTROL
+      || ctrl->tio.object->tio.VX_CONTROL->num_entries)
+    return;
+  /* the overall viewport: the first of the paper space layout's viewports */
+  if (ps && ps->fixedtype == DWG_TYPE_BLOCK_HEADER
+      && ps->tio.object->tio.BLOCK_HEADER->layout)
+    {
+      Dwg_Object *lo
+          = dwg_ref_object (dwg, ps->tio.object->tio.BLOCK_HEADER->layout);
+      if (lo && lo->fixedtype == DWG_TYPE_LAYOUT
+          && lo->tio.object->tio.LAYOUT->num_viewports
+          && lo->tio.object->tio.LAYOUT->viewports
+          && lo->tio.object->tio.LAYOUT->viewports[0])
+        overall = lo->tio.object->tio.LAYOUT->viewports[0]->absolute_ref;
+    }
+  /* the VIEWPORTs of the current paper space (entmode 1) only, as AutoCAD:
+     those of the other layouts get no VX record */
+  for (i = 0; i < dwg->num_objects; i++)
+    if (dwg->object[i].fixedtype == DWG_TYPE_VIEWPORT
+        && dwg->object[i].tio.entity
+        && dwg->object[i].tio.entity->entmode == 1)
+      {
+        BITCODE_RLL *tmp
+            = (BITCODE_RLL *)realloc (vps, (num + 1) * sizeof (BITCODE_RLL));
+        if (!tmp)
+          {
+            free (vps);
+            return;
+          }
+        vps = tmp;
+        vps[num++] = dwg->object[i].handle.value;
+      }
+  if (!num)
+    {
+      free (vps);
+      return;
+    }
+  if (!overall)
+    overall = vps[0];
+  /* as AutoCAD: the overall viewport's record first (after the empty one),
+     then the others in object order */
+  for (i = 0; i < num; i++)
+    if (vps[i] == overall && i)
+      {
+        memmove (&vps[1], &vps[0], i * sizeof (BITCODE_RLL));
+        vps[0] = overall;
+        break;
+      }
+  recs = (BITCODE_RLL *)calloc (num, sizeof (BITCODE_RLL));
+  if (!recs)
+    {
+      free (vps);
+      return;
+    }
+  /* the add API writes the names in the source's string format */
+  dwg->header.version = dwg->header.from_version;
+  vx = dwg_add_VX (dwg, "");
+  if (vx)
+    {
+      vx->is_on = 1;
+      vx->is_xref_ref = 1;
+      vx->viewport = dwg_add_handleref (dwg, 4, 0, NULL);
+      vx->prev_entry = dwg_add_handleref (dwg, 5, 0, NULL);
+    }
+  for (i = 0; i < num; i++)
+    {
+      int error;
+      Dwg_Object *vxobj;
+      vx = dwg_add_VX (dwg, vps[i] == overall ? "1" : "");
+      if (!vx)
+        continue;
+      vxobj = dwg_obj_generic_to_object (vx, &error);
+      if (!vxobj)
+        continue;
+      vx->is_on = 1;
+      vx->is_xref_ref = 1;
+      vx->viewport = dwg_add_handleref (dwg, 4, vps[i], NULL);
+      recs[i] = vxobj->handle.value;
+    }
+  /* now that the object array is final: back pointers and links */
+  for (i = 0; i < num; i++)
+    {
+      Dwg_Object *vp = dwg_resolve_handle (dwg, vps[i]);
+      Dwg_Object *vxobj = recs[i] ? dwg_resolve_handle (dwg, recs[i]) : NULL;
+      BITCODE_RLL prev = 0;
+      if (!vp || !vxobj || vp->fixedtype != DWG_TYPE_VIEWPORT)
+        continue;
+      vp->tio.entity->tio.VIEWPORT->vport_entity_header
+          = dwg_add_handleref (dwg, 5, recs[i], NULL);
+      if (vps[i] != overall)
+        { // the next detail record
+          BITCODE_BL j;
+          for (j = i + 1; j < num; j++)
+            if (vps[j] != overall && recs[j])
+              {
+                prev = recs[j];
+                break;
+              }
+        }
+      vxobj->tio.object->tio.VX_TABLE_RECORD->prev_entry
+          = dwg_add_handleref (dwg, 5, prev, NULL);
+      if (vps[i] == overall)
+        dwg->header_vars.VX_TABLE_RECORD
+            = dwg_add_handleref (dwg, 5, recs[i], NULL);
+    }
+  dwg->header.version = version;
+  LOG_TRACE ("downconvert_VX: %u VX records\n", (unsigned)num + 1);
+  free (vps);
+  free (recs);
+}
+
+/* r13-r2000 from r2004+: link the VERTEX of a POLYLINE and the ATTRIB of an
+   INSERT as AutoCAD does: the first without prev_entity, the last without
+   next_entity, nolinks where prev and next are the adjacent handles. An
+   r2004+ source has no links, and dwg_fixup_BLOCKS_entities only links the
+   block's own entities. AutoCAD rejects a VERTEX/ATTRIB with null links and
+   nolinks 0. Also sets first/last_vertex and first/last_attrib when
+   missing. */
+static void
+link_subentities (Dwg_Data *restrict dwg, BITCODE_H *list, BITCODE_BL num,
+                  BITCODE_H *first, BITCODE_H *last)
+{
+  BITCODE_BL i;
+  if (!list || !num)
+    return;
+  for (i = 0; i < num; i++)
+    {
+      Dwg_Object *o = list[i] ? dwg_ref_object (dwg, list[i]) : NULL;
+      Dwg_Object_Entity *ent;
+      BITCODE_RLL cur, prev, next;
+      if (!o || o->supertype != DWG_SUPERTYPE_ENTITY || !o->tio.entity)
+        continue;
+      ent = o->tio.entity;
+      cur = o->handle.value;
+      prev = i > 0 && list[i - 1] ? list[i - 1]->absolute_ref : 0;
+      next = i + 1 < num && list[i + 1] ? list[i + 1]->absolute_ref : 0;
+      ent->nolinks = prev && next && prev == cur - 1 && next == cur + 1;
+      ent->prev_entity = dwg_add_handleref (dwg, 4, prev, NULL);
+      ent->next_entity = dwg_add_handleref (dwg, 4, next, NULL);
+    }
+  if (first && (!*first || !(*first)->absolute_ref) && list[0])
+    *first = dwg_add_handleref (dwg, 4, list[0]->absolute_ref, NULL);
+  if (last && (!*last || !(*last)->absolute_ref) && list[num - 1])
+    *last = dwg_add_handleref (dwg, 4, list[num - 1]->absolute_ref, NULL);
+}
+
+static void
+downconvert_subentity_links (Dwg_Data *restrict dwg)
+{
+  BITCODE_BL i;
+  for (i = 0; i < dwg->num_objects; i++)
+    {
+      Dwg_Object *obj = &dwg->object[i];
+      if (obj->supertype != DWG_SUPERTYPE_ENTITY || !obj->tio.entity)
+        continue;
+      switch (obj->fixedtype)
+        {
+        case DWG_TYPE_POLYLINE_2D:
+        case DWG_TYPE_POLYLINE_3D:
+        case DWG_TYPE_POLYLINE_PFACE:
+        case DWG_TYPE_POLYLINE_MESH:
+          {
+            /* all start with COMMON_ENTITY_POLYLINE */
+            Dwg_Entity_POLYLINE_2D *pl = obj->tio.entity->tio.POLYLINE_2D;
+            link_subentities (dwg, pl->vertex, pl->num_owned,
+                              &pl->first_vertex, &pl->last_vertex);
+          }
+          break;
+        case DWG_TYPE_INSERT:
+          {
+            Dwg_Entity_INSERT *in = obj->tio.entity->tio.INSERT;
+            if (in->has_attribs)
+              link_subentities (dwg, in->attribs, in->num_owned,
+                                &in->first_attrib, &in->last_attrib);
+          }
+          break;
+        case DWG_TYPE_MINSERT:
+          {
+            Dwg_Entity_MINSERT *in = obj->tio.entity->tio.MINSERT;
+            if (in->has_attribs)
+              link_subentities (dwg, in->attribs, in->num_owned,
+                                &in->first_attrib, &in->last_attrib);
+          }
+          break;
+        default:
+          break;
+        }
+    }
+}
+
+/* r2010 and older from r2013+: AutoCAD keeps the owned action params and the
+   value params of a parameter-based action body in the body
+   (AcDbAssocParamBasedActionBody, aab_version 1), and the params are owned by
+   the body. r2013+ has both in the ASSOCACTION (class_version 2), which the
+   spec writes without them before r2013, so they move back to the body here
+   (e.g. for an ASSOCARRAYACTIONBODY), as in AutoCAD's DXF of the same object
+   at R2000-R2018.
+   Not touched: geometry_status and ASSOCNETWORK.owned_actions. AutoCAD's
+   outputs differ there by evaluation state, not by version (R2007 and R2018:
+   0 and none; R2000-R2013: 1 and the actions again). */
+static void
+downconvert_assoc_pab (Dwg_Data *restrict dwg)
+{
+  BITCODE_BL i, j;
+  for (i = 0; i < dwg->num_objects; i++)
+    {
+      Dwg_Object *obj = &dwg->object[i];
+      Dwg_Object_ASSOCACTION *act;
+      Dwg_Object *body;
+      const Dwg_DYNAPI_field *f;
+      Dwg_ASSOCPARAMBASEDACTIONBODY *pab;
+      BITCODE_BL *aab_version;
+      if (obj->fixedtype != DWG_TYPE_ASSOCACTION || !obj->tio.object
+          || !obj->tio.object->tio.ASSOCACTION)
+        continue;
+      act = obj->tio.object->tio.ASSOCACTION;
+      if (act->class_version < 2 || !act->actionbody)
+        continue;
+      body = dwg_ref_object (dwg, act->actionbody);
+      if (!body || body->supertype != DWG_SUPERTYPE_OBJECT || !body->tio.object
+          || !body->tio.object->tio.APPID || !body->name)
+        continue;
+      f = dwg_dynapi_entity_field (body->name, "pab");
+      if (!f || strNE (f->type, "Dwg_ASSOCPARAMBASEDACTIONBODY"))
+        continue;
+      pab = (Dwg_ASSOCPARAMBASEDACTIONBODY *)((char *)body->tio.object
+                                                   ->tio.APPID
+                                               + f->offset);
+      f = dwg_dynapi_entity_field (body->name, "aab_version");
+      if (f)
+        {
+          aab_version = (BITCODE_BL *)((char *)body->tio.object->tio.APPID
+                                       + f->offset);
+          if (*aab_version > 1)
+            *aab_version = 1;
+        }
+      if (!pab->num_deps && act->num_owned_params && act->owned_params)
+        {
+          pab->num_deps = act->num_owned_params;
+          pab->deps = act->owned_params;
+          act->num_owned_params = 0;
+          act->owned_params = NULL;
+          for (j = 0; j < pab->num_deps; j++)
+            {
+              Dwg_Object *o
+                  = pab->deps[j] ? dwg_ref_object (dwg, pab->deps[j]) : NULL;
+              if (o && o->supertype == DWG_SUPERTYPE_OBJECT && o->tio.object)
+                o->tio.object->ownerhandle
+                    = dwg_add_handleref (dwg, 4, body->handle.value, o);
+            }
+        }
+      if (!pab->num_values && act->num_values && act->values)
+        {
+          pab->num_values = act->num_values;
+          pab->values = act->values;
+          act->num_values = 0;
+          act->values = NULL;
+        }
+      LOG_TRACE ("downconvert_assoc_pab: %s " FORMAT_RLLx
+                 " deps %u values %u\n",
+                 body->name, body->handle.value, (unsigned)pab->num_deps,
+                 (unsigned)pab->num_values);
+    }
+}
+
+/* r2007+ PROXY_OBJECT data for r2000/r2004 output. The raw r2007+ data
+   holds the object's string stream and its footer, and the first string is
+   the "cn:<C++ class name>" T that follows class_id. AutoCAD's pre-r2007
+   records keep the rest as is: the data bits, the proxy's own strings (still
+   UTF-16) and a footer with the smaller size (in every proxy of AutoCAD's
+   R2000 and R2004 files). The class name goes to a TV in r2004. Falls back to the
+   unchanged data when the footer does not parse. */
+static void
+encode_proxy_data_pre_r2007 (Bit_Chain *restrict dat,
+                             const unsigned char *restrict data,
+                             const BITCODE_BL numbits)
+{
+  Bit_Chain src = { 0 };
+  size_t sizepos, strstart, first_end, newsize, i;
+  BITCODE_RS lo, hi = 0;
+  size_t size;
+  BITCODE_BS len;
+  if (!data || numbits < 18)
+    goto asis;
+  src.chain = (unsigned char *)data;
+  src.size = ((size_t)numbits + 7) / 8;
+  src.version = src.from_version = R_2007;
+  bit_set_position (&src, numbits - 1);
+  if (!bit_read_B (&src))
+    goto asis;
+  sizepos = numbits - 17;
+  bit_set_position (&src, sizepos);
+  lo = bit_read_RS (&src);
+  size = lo;
+  if (lo & 0x8000)
+    {
+      if (numbits < 34)
+        goto asis;
+      sizepos = numbits - 33;
+      bit_set_position (&src, sizepos);
+      hi = bit_read_RS (&src);
+      size = (size_t)(lo & 0x7fff) | ((size_t)hi << 15);
+    }
+  if (size > sizepos)
+    goto asis;
+  strstart = sizepos - size;
+  bit_set_position (&src, strstart);
+  len = bit_read_BS (&src);
+  first_end = bit_position (&src) + 16 * (size_t)len;
+  if (first_end > sizepos)
+    goto asis;
+  newsize = size - (first_end - strstart);
+  LOG_TRACE ("proxy data: %u bits, strings %u, without the class name %u\n",
+             (unsigned)numbits, (unsigned)size, (unsigned)newsize);
+  bit_set_position (&src, 0);
+  for (i = 0; i < strstart; i++)
+    bit_write_B (dat, bit_read_B (&src));
+  bit_set_position (&src, first_end);
+  for (i = first_end; i < sizepos; i++)
+    bit_write_B (dat, bit_read_B (&src));
+  if (newsize)
+    {
+      if (newsize > 0x7fff)
+        {
+          bit_write_RS (dat, (BITCODE_RS)(newsize >> 15));
+          bit_write_RS (dat, (BITCODE_RS)((newsize & 0x7fff) | 0x8000));
+        }
+      else
+        bit_write_RS (dat, (BITCODE_RS)newsize);
+      bit_write_B (dat, 1);
+    }
+  else
+    bit_write_B (dat, 0);
+  return;
+asis:
+  bit_write_bits (dat, (unsigned char *)data, numbits);
+}
+
 /* utf-8 string without lowercase letters, space or ! */
 static BITCODE_T
 fixup_invalid_tag (const Bit_Chain *restrict dat, char *restrict tag)
@@ -5088,6 +5489,29 @@ fixup_invalid_tag (const Bit_Chain *restrict dat, char *restrict tag)
         free (wstr); // temporary copy, original returned unchanged
       return (BITCODE_T)tag;
     }
+}
+
+/* The plain text of an R2018+ multi-line ATTRIB/ATTDEF mtext.text, for the
+   single-line text_value/default_value of an older version. The result has
+   the string type of the source (TU when IS_FROM_TU), as bit_write_T expects.
+   dwg_strip_mtext works on UTF-8 only. */
+static BITCODE_T
+strip_mtext_T (const Bit_Chain *restrict dat, const BITCODE_T restrict mtext)
+{
+  char *u8, *plain;
+  BITCODE_T result;
+  if (!IS_FROM_TU (dat))
+    return (BITCODE_T)dwg_strip_mtext ((const char *)mtext);
+  u8 = bit_convert_TU ((BITCODE_TU)mtext);
+  if (!u8)
+    return NULL;
+  plain = dwg_strip_mtext (u8);
+  free (u8);
+  if (!plain)
+    return NULL;
+  result = (BITCODE_T)bit_utf8_to_TU (plain, 0);
+  free (plain);
+  return result;
 }
 
 #define HANDLE_STREAM_ERROR_CLEANUP
@@ -6453,12 +6877,31 @@ dwg_encode_variable_type (Dwg_Data *restrict dwg, Bit_Chain *restrict dat,
   return DWG_ERR_UNHANDLEDCLASS;
 }
 
+/* Whether to copy the raw r2018 record of a partly decoded dynamic block
+   class (BLOCKLOOKUPACTION ...) to r2013 output, instead of re-encoding it
+   from its incomplete fields, which cuts it short. AutoCAD writes
+   byte-identical r2013 and r2018 records for most classes, but the raw bits
+   are not the whole record in the r2013 layout, and AutoCAD cannot read
+   r2013 output with such copies. So always false for now. */
+static bool
+raw_same_in_r2013 (const Dwg_Data *restrict dwg,
+                   const Dwg_Object *restrict obj)
+{
+  if (dwg->header.version < R_2013b || dwg->header.version >= R_2018b
+      || dwg->header.from_version < R_2018b)
+    return false;
+  /* Disabled, see the raw_same_in_r2013 comment. */
+  (void)obj;
+  return false;
+}
+
 bool
 dwg_encode_unknown_bits (Bit_Chain *restrict dat, Dwg_Object *restrict obj)
 {
   Dwg_Data *restrict dwg = obj->parent;
-  if (dwg->header.version == dwg->header.from_version && obj->unknown_bits
-      && obj->num_unknown_bits) // cannot calculate
+  if ((dwg->header.version == dwg->header.from_version
+       || raw_same_in_r2013 (dwg, obj))
+      && obj->unknown_bits && obj->num_unknown_bits) // cannot calculate
     {
       int len = obj->num_unknown_bits / 8;
       const int mod = obj->num_unknown_bits % 8;

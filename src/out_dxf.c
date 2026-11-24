@@ -65,6 +65,14 @@ static int dxf_common_entity_handle_data (Bit_Chain *restrict dat,
                                           const Dwg_Object *restrict obj);
 static int dwg_dxf_object (Bit_Chain *restrict dat,
                            const Dwg_Object *restrict obj, int *restrict);
+static int dxf_r12_entity_ok (const Dwg_Object *restrict obj);
+static BITCODE_RLL dxf_r12_handles_init (const Bit_Chain *restrict dat,
+                                         Dwg_Data *restrict dwg);
+static int dxf_r12_in_pspace (const Dwg_Object *restrict obj);
+static void dxf_r12_mview_eed (Bit_Chain *restrict dat,
+                               const Dwg_Object *restrict obj);
+static int dxf_r12_downconvert_entity (Bit_Chain *restrict dat,
+                                       const Dwg_Object *restrict obj);
 static int dxf_3dsolid (Bit_Chain *restrict dat,
                         const Dwg_Object *restrict obj,
                         Dwg_Entity_3DSOLID *restrict _obj);
@@ -721,10 +729,17 @@ dxf_print_rd (Bit_Chain *dat, BITCODE_RD value, int dxf)
       VALUE_TV (_obj->nam, dxf)                                               \
   }
 #define FIELD_TFF(nam, len, dxf) VALUE_TV (_obj->nam, dxf)
+// pre-r13 fixed-size strings: from an r2007+ DWG they are TU, so FIELD_T.
+#define FIELD_TFv(nam, len, dxf) FIELD_T (nam, dxf)
+/* The pre-r13 branches of the spec use TV for strings, which are TU when
+   converting an r2007+ drawing: written as TU then. */
 #define FIELD_TV(nam, dxf)                                                    \
   if (dxf)                                                                    \
     {                                                                         \
-      VALUE_TV (_obj->nam, dxf);                                              \
+      if (dat->version < R_13b1 && IS_FROM_TU (dat))                          \
+        VALUE_TU ((BITCODE_TU)_obj->nam, dxf)                                 \
+      else                                                                    \
+        VALUE_TV (_obj->nam, dxf);                                            \
     }
 #define FIELD_TU(nam, dxf)                                                    \
   if (dxf)                                                                    \
@@ -1241,7 +1256,9 @@ dxf_print_rd (Bit_Chain *dat, BITCODE_RD value, int dxf)
           }                                                                   \
       }                                                                       \
     error |= dwg_dxf_##token##_private (dat, hdl_dat, str_dat, obj);          \
-    error |= dxf_write_eed (dat, obj->tio.object);                            \
+    /* r12: no EED on table records, which AutoCAD rejects */                \
+    if (dat->version >= R_13b1)                                               \
+      error |= dxf_write_eed (dat, obj->tio.object);                          \
     return error;                                                             \
   }                                                                           \
   static int dwg_dxf_##token##_private (Bit_Chain *dat, Bit_Chain *hdl_dat,   \
@@ -1683,6 +1700,10 @@ dxf_fixup_TU (Bit_Chain *restrict dat, const BITCODE_TU restrict wstr,
     free (u8);
 }
 
+static void dxf_cvt_tablerecord (Bit_Chain *restrict dat,
+                                 const Dwg_Object *restrict obj,
+                                 char *restrict value, const int dxf);
+
 static int
 dxf_write_eed (Bit_Chain *restrict dat, const Dwg_Object_Object *restrict obj)
 {
@@ -1695,7 +1716,12 @@ dxf_write_eed (Bit_Chain *restrict dat, const Dwg_Object_Object *restrict obj)
         {
           // name of APPID
           Dwg_Object *appid = dwg_resolve_handle (dwg, _obj->handle.value);
-          if (appid && appid->fixedtype == DWG_TYPE_APPID)
+          if (appid && appid->fixedtype == DWG_TYPE_APPID
+              && dat->version < R_2000 && dat->from_version >= R_2000)
+            // as the APPID table record: its old (short) name
+            dxf_cvt_tablerecord (dat, appid,
+                                 appid->tio.object->tio.APPID->name, 1001);
+          else if (appid && appid->fixedtype == DWG_TYPE_APPID)
             VALUE_T (appid->tio.object->tio.APPID->name, 1001)
           else
             VALUE_TFF ("ACAD", 1001);
@@ -1966,6 +1992,301 @@ dxf_write_xdata (Bit_Chain *restrict dat, const Dwg_Object *restrict obj,
   return 0;
 }
 
+/* Before r2000 (no EXTNAMES) symbol table names consist of uppercase letters,
+   digits, $, - and _. AutoCAD saves "Grid Line" as GRID_LINE, and rejects an
+   r12 DXF with "Improper table entry name GRID LINE". Returns the converted
+   name (malloc'ed). */
+static char *
+dxf_old_name_chars (const char *restrict value, const int table)
+{
+  const unsigned char *p;
+  char *out = (char *)malloc (strlen (value) + 1);
+  size_t i = 0;
+  if (!out)
+    return NULL;
+  // only block names may be anonymous: AutoCAD writes the layer
+  // *ADSK_ASSOC_ENTITY_BACKUPS as ADSK_ASSOC_ENTITY_BACKUPS
+  if (*value == '*' && table != DWG_TYPE_BLOCK_HEADER && value[1])
+    value++;
+  for (p = (const unsigned char *)value; *p; p++)
+    {
+      const unsigned char c = *p;
+      if (c >= 128 || c == '$' || c == '-' || c == '_' || isdigit (c)
+          || isupper (c) || (c == '*' && p == (const unsigned char *)value))
+        out[i++] = (char)c;
+      else if (islower (c))
+        out[i++] = (char)toupper (c);
+      else
+        out[i++] = '_';
+    }
+  out[i] = '\0';
+  return out;
+}
+
+/* The old names must also be short and unique in their table. AutoCAD LT
+   2027 writes r12 DXF names of at most 26 chars (APPID 31). A longer name is
+   cut to 26, and on a clash the last chars are replaced by a base-36 counter
+   (0-9, A-Z, then 00, 01, ...), skipping names in use: ..._TIMBER,
+   ..._TIMBE0, ..._TIMBE1. The table record and every reference to it must
+   get the same name, so the names are mapped once per output: old_names
+   (table, original name -> written name) and used_names (table, written
+   name), both sorted for a binary search. */
+typedef struct
+{
+  int table; // fixedtype of the table record
+  char *key; // the original UTF-8 name; in used_names the written name
+  char *out;
+} Dxf_OldName;
+static Dxf_OldName *old_names = NULL, *used_names = NULL;
+static size_t num_old_names = 0, max_old_names = 0;
+static size_t num_used_names = 0, max_used_names = 0;
+
+static int
+dxf_oldname_cmp (const Dxf_OldName *x, int table, const char *key)
+{
+  if (x->table != table)
+    return x->table < table ? -1 : 1;
+  return strcmp (x->key, key);
+}
+
+/* index of the first element >= (table, key) */
+static size_t
+dxf_oldname_lower (const Dxf_OldName *arr, size_t num, int table,
+                   const char *key)
+{
+  size_t lo = 0, hi = num;
+  while (lo < hi)
+    {
+      size_t mid = lo + (hi - lo) / 2;
+      if (dxf_oldname_cmp (&arr[mid], table, key) < 0)
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+  return lo;
+}
+
+static int
+dxf_oldname_insert (Dxf_OldName **arr, size_t *num, size_t *max, int table,
+                    char *key, char *out)
+{
+  size_t i = dxf_oldname_lower (*arr, *num, table, key);
+  if (*num >= *max)
+    {
+      size_t nmax = *max ? *max * 2 : 256;
+      Dxf_OldName *n
+          = (Dxf_OldName *)realloc (*arr, nmax * sizeof (Dxf_OldName));
+      if (!n)
+        return 1;
+      *arr = n;
+      *max = nmax;
+    }
+  memmove (&(*arr)[i + 1], &(*arr)[i], (*num - i) * sizeof (Dxf_OldName));
+  (*arr)[i].table = table;
+  (*arr)[i].key = key;
+  (*arr)[i].out = out;
+  (*num)++;
+  return 0;
+}
+
+static int
+dxf_oldname_is_used (int table, const char *name)
+{
+  size_t i = dxf_oldname_lower (used_names, num_used_names, table, name);
+  return i < num_used_names && used_names[i].table == table
+         && strEQ (used_names[i].key, name);
+}
+
+static size_t
+dxf_old_name_limit (const Bit_Chain *restrict dat, int table)
+{
+  // r13/r14 (31) unverified: AutoCAD LT 2027 cannot save them
+  if (table == DWG_TYPE_APPID || dat->version >= R_13b1)
+    return 31;
+  return 26;
+}
+
+/* Maps (table, orig) to a unique short name and records it. Returns the
+   written name, owned by the map, or NULL on OOM. */
+static const char *
+dxf_old_name_assign (const Bit_Chain *restrict dat, int table,
+                     const char *restrict orig)
+{
+  char *conv = dxf_old_name_chars (orig, table);
+  char *key;
+  size_t len, limit = dxf_old_name_limit (dat, table);
+  if (!conv)
+    return NULL;
+  len = strlen (conv);
+  if (len > limit)
+    {
+      conv[limit] = '\0';
+      len = limit;
+    }
+  if (len && dxf_oldname_is_used (table, conv))
+    {
+      static const char digits[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+      size_t w;
+      int found = 0;
+      char *cand = (char *)malloc (len + 5);
+      if (!cand)
+        {
+          free (conv);
+          return NULL;
+        }
+      for (w = 1; w <= 4 && !found; w++)
+        {
+          const size_t keep = len > w ? len - w : 0;
+          unsigned long n, max = 1;
+          size_t d;
+          for (d = 0; d < w; d++)
+            max *= 36;
+          for (n = 0; n < max; n++)
+            {
+              unsigned long v = n;
+              memcpy (cand, conv, keep);
+              for (d = 0; d < w; d++)
+                {
+                  cand[keep + w - 1 - d] = digits[v % 36];
+                  v /= 36;
+                }
+              cand[keep + w] = '\0';
+              if (!dxf_oldname_is_used (table, cand))
+                {
+                  found = 1;
+                  break;
+                }
+            }
+        }
+      free (conv);
+      if (!found)
+        {
+          free (cand);
+          return NULL;
+        }
+      conv = cand;
+    }
+  key = strdup (orig);
+  if (!key)
+    {
+      free (conv);
+      return NULL;
+    }
+  if (dxf_oldname_insert (&used_names, &num_used_names, &max_used_names, table,
+                          conv, conv))
+    {
+      free (key);
+      free (conv);
+      return NULL;
+    }
+  if (dxf_oldname_insert (&old_names, &num_old_names, &max_old_names, table,
+                          key, conv))
+    {
+      free (key); // conv stays owned by used_names
+      return NULL;
+    }
+  return conv;
+}
+
+static const char *
+dxf_old_name_lookup (int table, const char *restrict orig)
+{
+  size_t i = dxf_oldname_lower (old_names, num_old_names, table, orig);
+  if (i < num_old_names && old_names[i].table == table
+      && strEQ (old_names[i].key, orig))
+    return old_names[i].out;
+  return NULL;
+}
+
+static void
+dxf_old_names_free (void)
+{
+  size_t i;
+  for (i = 0; i < num_old_names; i++)
+    free (old_names[i].key);
+  for (i = 0; i < num_used_names; i++)
+    free (used_names[i].out); // key == out
+  free (old_names);
+  free (used_names);
+  old_names = used_names = NULL;
+  num_old_names = max_old_names = num_used_names = max_used_names = 0;
+}
+
+static int
+dxf_is_symbol_table_record (const Dwg_Object *obj)
+{
+  switch (obj->fixedtype)
+    {
+    case DWG_TYPE_BLOCK_HEADER:
+    case DWG_TYPE_LAYER:
+    case DWG_TYPE_STYLE:
+    case DWG_TYPE_LTYPE:
+    case DWG_TYPE_VIEW:
+    case DWG_TYPE_UCS:
+    case DWG_TYPE_VPORT:
+    case DWG_TYPE_APPID:
+    case DWG_TYPE_DIMSTYLE:
+      return 1;
+    default:
+      return 0;
+    }
+}
+
+/* Names that fit and are free first, so they stay as they are, then the
+   rest in object order. */
+static void
+dxf_old_names_init (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
+{
+  int pass;
+  dxf_old_names_free ();
+  for (pass = 0; pass < 2; pass++)
+    {
+      BITCODE_BL i;
+      for (i = 0; i < dwg->num_objects; i++)
+        {
+          const Dwg_Object *obj = &dwg->object[i];
+          char *name;
+          if (obj->supertype != DWG_SUPERTYPE_OBJECT
+              || !dxf_is_symbol_table_record (obj) || !obj->tio.object
+              || !obj->tio.object->tio.APPID
+              || !obj->tio.object->tio.APPID->name)
+            continue;
+          // all table records start with COMMON_TABLE_FIELDS
+          name = obj->tio.object->tio.APPID->name;
+          if (IS_FROM_TU (dat))
+            name = bit_convert_TU ((BITCODE_TU)name);
+          if (name && *name && !dxf_old_name_lookup (obj->fixedtype, name))
+            {
+              int fits = 0;
+              if (pass == 0)
+                {
+                  char *conv = dxf_old_name_chars (name, obj->fixedtype);
+                  fits = conv
+                         && strlen (conv)
+                                <= dxf_old_name_limit (dat, obj->fixedtype)
+                         && !dxf_oldname_is_used (obj->fixedtype, conv);
+                  free (conv);
+                }
+              if (pass == 1 || fits)
+                (void)dxf_old_name_assign (dat, obj->fixedtype, name);
+            }
+          if (IS_FROM_TU (dat))
+            free (name);
+        }
+    }
+}
+
+/* Prints the old (pre-r2000) form of a table record name. */
+static void
+dxf_print_old_name (Bit_Chain *restrict dat, const char *restrict value,
+                    const int dxf, const int table)
+{
+  const char *out = dxf_old_name_lookup (table, value);
+  if (!out)
+    out = dxf_old_name_assign (dat, table, value);
+  fprintf (dat->fh, "%3i\r\n%s\r\n", dxf, out ? out : value);
+}
+
 // r2000+ converts STANDARD to Standard, BYLAYER to ByLayer, BYBLOCK to ByBlock
 static void
 dxf_cvt_tablerecord (Bit_Chain *restrict dat, const Dwg_Object *restrict obj,
@@ -1978,17 +2299,9 @@ dxf_cvt_tablerecord (Bit_Chain *restrict dat, const Dwg_Object *restrict obj,
           value = bit_convert_TU ((BITCODE_TU)value);
         }
       if (dat->from_version >= R_2000 && dat->version < R_2000)
-        { // upcase. convert the other way round, from newer to older
-          if (strEQc (value, "Standard"))
-            fprintf (dat->fh, "%3i\r\nSTANDARD\r\n", dxf);
-          else if (strEQc (value, "ByLayer"))
-            fprintf (dat->fh, "%3i\r\nBYLAYER\r\n", dxf);
-          else if (strEQc (value, "ByBlock"))
-            fprintf (dat->fh, "%3i\r\nBYBLOCK\r\n", dxf);
-          else if (strEQc (value, "*Active"))
-            fprintf (dat->fh, "%3i\r\n*ACTIVE\r\n", dxf);
-          else
-            fprintf (dat->fh, "%3i\r\n%s\r\n", dxf, value);
+        { // upcase (Standard, ByLayer, ByBlock, *Active too) and replace
+          // the characters an old name cannot have
+          dxf_print_old_name (dat, value, dxf, obj->fixedtype);
         }
       else
         { // downcase some standard names, only when converting from
@@ -2005,6 +2318,12 @@ dxf_cvt_tablerecord (Bit_Chain *restrict dat, const Dwg_Object *restrict obj,
           else if (dat->from_version && dat->from_version < R_2000
                    && dat->version >= R_2000 && strEQc (value, "*ACTIVE"))
             fprintf (dat->fh, "%3i\r\n*Active\r\n", dxf);
+          // a layer name of r2007+ without its leading '*' in older
+          // releases (*ADSK_SYSTEM_LIGHTS), as AutoCAD writes it
+          else if (obj->fixedtype == DWG_TYPE_LAYER
+                   && dat->from_version >= R_2007 && dat->version < R_2007
+                   && value[0] == '*' && value[1])
+            fprintf (dat->fh, "%3i\r\n%s\r\n", dxf, value + 1);
           else
             fprintf (dat->fh, "%3i\r\n%s\r\n", dxf, value);
         }
@@ -2056,6 +2375,8 @@ dxf_cvt_blockname (Bit_Chain *restrict dat, char *restrict name, const int dxf)
                && (!memcmp (name, "*Paper_Space", 12)
                    || !memcmp (name, "$PAPER_SPACE", 12)))
         fprintf (dat->fh, "%3i\r\n$PAPER_SPACE%s\r\n", dxf, &name[12]);
+      else if (dat->from_version >= R_2000)
+        dxf_print_old_name (dat, name, dxf, DWG_TYPE_BLOCK_HEADER);
       else
         fprintf (dat->fh, "%3i\r\n%s\r\n", dxf, name);
     }
@@ -2069,6 +2390,8 @@ dxf_cvt_blockname (Bit_Chain *restrict dat, char *restrict name, const int dxf)
                && (!memcmp (name, "$PAPER_SPACE", 12)
                    || !memcmp (name, "*PAPER_SPACE", 12)))
         fprintf (dat->fh, "%3i\r\n*Paper_Space%s\r\n", dxf, &name[12]);
+      else if (dat->version < R_2000 && dat->from_version >= R_2000)
+        dxf_print_old_name (dat, name, dxf, DWG_TYPE_BLOCK_HEADER);
       else
         fprintf (dat->fh, "%3i\r\n%s\r\n", dxf, name);
     }
@@ -2131,7 +2454,8 @@ dxf_cvt_blockname (Bit_Chain *restrict dat, char *restrict name, const int dxf)
     dxf_cvt_tablerecord (dat, obj, _obj->name, 2);                            \
   else                                                                        \
     VALUE_TVc ("*", 2)                                                        \
-  if (strEQc (#acdbname, "Layer") && dat->version >= R_2000)                  \
+  if (strEQc (#acdbname, "Layer")                                             \
+      && (dat->version >= R_2000 || dat->from_version >= R_13b1))             \
     { /* Mask off plotflag and linewt. */                                     \
       /* Don't keep bit 16 when not xrefdep like "XREF|name" */               \
       BITCODE_RC _flag = _obj->flag & ~0x3e0;                                 \
@@ -2143,8 +2467,9 @@ dxf_cvt_blockname (Bit_Chain *restrict dat, char *restrict name, const int dxf)
     /* skip 70 for AcDbBlockTableRecord here. done in AcDbBlockBegin */       \
     ;                                                                         \
   else                                                                        \
-    { /* mask off 64, the loaded bit 6, since >= r13 */                       \
-      SINCE (R_13b1)                                                          \
+    { /* mask off 64, the loaded bit 6, since >= r13. Also in r12 from        \
+         r13+: AutoCAD writes 0 (AUDIT: "Duplicate name" with 64) */          \
+      if (dat->version >= R_13b1 || dat->from_version >= R_13b1)              \
         _obj->flag &= ~64;                                                    \
       VALUE_RC (_obj->flag, 70);                                              \
     }
@@ -3268,13 +3593,58 @@ dxf_write_unknown_entity (Bit_Chain *restrict dat,
   return error;
 }
 
+/* The class of a variable-type object, if the DXF keeps it: 0, or the error
+   for dwg_dxf_variable_type to return. */
+static int
+dxf_variable_type_class (const Dwg_Data *restrict dwg, Bit_Chain *restrict dat,
+                         const Dwg_Object *restrict obj, Dwg_Class **klassp,
+                         int *is_entityp, const bool warn)
+{
+  Dwg_Class *klass = &dwg->dwg_class[obj->type - 500];
+  int is_entity;
+  if (!klass->dxfname)
+    return DWG_ERR_INTERNALERROR;
+  is_entity = dwg_class_is_entity (klass);
+  // Only when converting a newer drawing. A R13/R14 drawing may have classes
+  // of newer AutoCAD, which are kept.
+  if (dat->version < R_2000 && dwg->header.from_version > dat->version)
+    {
+      // keep only: IMAGE, LWPOLYLINE, HATCH
+      if (is_entity && strNE (klass->dxfname, "IMAGE")
+          && strNEc (klass->dxfname, "LWPOLYLINE")
+          && strNEc (klass->dxfname, "HATCH"))
+        {
+          if (warn)
+            LOG_WARN ("Skip %s", klass->dxfname);
+          return DWG_ERR_UNHANDLEDCLASS;
+        }
+      // keep only: DICTIONARYVAR, MATERIAL, RASTERVARIABLES, IMAGEDEF,
+      // IMAGEDEF_REACTOR, XRECORD, IDBUFFER
+      else if (!is_entity && strNEc (klass->dxfname, "DICTIONARYVAR")
+               && strNEc (klass->dxfname, "MATERIAL")
+               && strNEc (klass->dxfname, "RASTERVARIABLES")
+               && strNEc (klass->dxfname, "IDBUFFER")
+               && strNEc (klass->dxfname, "IMAGEDEF")
+               && strNEc (klass->dxfname, "IMAGEDEF_REACTOR")
+               && strNEc (klass->dxfname, "XRECORD"))
+        {
+          if (warn)
+            LOG_WARN ("Skip %s", klass->dxfname);
+          return DWG_ERR_UNHANDLEDCLASS;
+        }
+    }
+  *klassp = klass;
+  *is_entityp = is_entity;
+  return 0;
+}
+
 /* returns 0 on success
  */
 static int
 dwg_dxf_variable_type (const Dwg_Data *restrict dwg, Bit_Chain *restrict dat,
                        Dwg_Object *restrict obj)
 {
-  int i;
+  int i, error;
   Dwg_Class *klass;
   int is_entity;
 
@@ -3289,46 +3659,102 @@ dwg_dxf_variable_type (const Dwg_Data *restrict dwg, Bit_Chain *restrict dat,
     }
   if (obj->fixedtype == DWG_TYPE_UNKNOWN_OBJ)
     return DWG_ERR_UNHANDLEDCLASS;
+  error = dxf_variable_type_class (dwg, dat, obj, &klass, &is_entity, true);
+  if (error)
+    return error;
 
-  klass = &dwg->dwg_class[i];
-  if (!klass || !klass->dxfname)
-    return DWG_ERR_INTERNALERROR;
-  is_entity = dwg_class_is_entity (klass);
-  // Only when converting a newer drawing. A R13/R14 drawing may have classes
-  // of newer AutoCAD, which are kept.
-  if (dat->version < R_2000 && dwg->header.from_version > dat->version)
-    {
-      // keep only: IMAGE, LWPOLYLINE, HATCH
-      if (is_entity && strNE (klass->dxfname, "IMAGE")
-          && strNEc (klass->dxfname, "LWPOLYLINE")
-          && strNEc (klass->dxfname, "HATCH"))
-        {
-          LOG_WARN ("Skip %s", klass->dxfname);
-          return DWG_ERR_UNHANDLEDCLASS;
-        }
-      // keep only: DICTIONARYVAR, MATERIAL, RASTERVARIABLES, IMAGEDEF,
-      // IMAGEDEF_REACTOR, XRECORD, IDBUFFER
-      else if (!is_entity && strNEc (klass->dxfname, "DICTIONARYVAR")
-               && strNEc (klass->dxfname, "MATERIAL")
-               && strNEc (klass->dxfname, "RASTERVARIABLES")
-               && strNEc (klass->dxfname, "IDBUFFER")
-               && strNEc (klass->dxfname, "IMAGEDEF")
-               && strNEc (klass->dxfname, "IMAGEDEF_REACTOR")
-               && strNEc (klass->dxfname, "XRECORD"))
-        {
-          LOG_WARN ("Skip %s", klass->dxfname);
-          return DWG_ERR_UNHANDLEDCLASS;
-        }
-    }
+  // if (!is_entity)
+  //  fprintf(dat->fh, "  0\r\n%s\r\n", dxfname);
 
-    // if (!is_entity)
-    //  fprintf(dat->fh, "  0\r\n%s\r\n", dxfname);
-
-    // clang-format off
+  // clang-format off
   #include "classes.inc"
   // clang-format on
 
   return DWG_ERR_UNHANDLEDCLASS;
+}
+
+/* The writers in dxf_variable_type_written's class dispatcher. */
+static int
+dxf_written_stub (Bit_Chain *restrict dat, const Dwg_Object *restrict obj)
+{
+  (void)dat;
+  (void)obj;
+  return 0;
+}
+
+/* 0 if dwg_dxf_variable_type writes the object: its checks and class
+   dispatcher, with dxf_written_stub as the writers. */
+static int
+dxf_variable_type_written (const Dwg_Data *restrict dwg,
+                           Bit_Chain *restrict dat, Dwg_Object *restrict obj)
+{
+  int i, error;
+  Dwg_Class *klass;
+  int is_entity;
+
+  i = obj->type - 500;
+  if (i < 0 || i >= dwg->num_classes)
+    return DWG_ERR_INVALIDTYPE;
+  if (obj->fixedtype == DWG_TYPE_UNKNOWN_ENT)
+    return 0;
+  if (obj->fixedtype == DWG_TYPE_UNKNOWN_OBJ)
+    return DWG_ERR_UNHANDLEDCLASS;
+  error = dxf_variable_type_class (dwg, dat, obj, &klass, &is_entity, false);
+  if (error)
+    return error;
+
+  // without the class warnings, which dwg_dxf_variable_type gives
+#  define IS_PRINT
+#  undef DWG_FUNC_N
+#  define DWG_FUNC_N(ACTION, name) dxf_written_stub
+  // clang-format off
+  #include "classes.inc"
+  // clang-format on
+#  undef DWG_FUNC_N
+#  define DWG_FUNC_N(ACTION, name) _DWG_FUNC_N (ACTION, name)
+#  undef IS_PRINT
+
+  return DWG_ERR_UNHANDLEDCLASS;
+}
+
+/* Whether an r13+ entity belongs to a paper space layout, for its 67:
+   entmode 1 (the current layout), or 0 with the block of another layout as
+   its owner. */
+bool
+dxf_entity_in_pspace (const Dwg_Object *restrict obj)
+{
+  const Dwg_Data *dwg = obj->parent;
+  const Dwg_Object_Entity *ent = obj->tio.entity;
+  const Dwg_Object *blk;
+  const BITCODE_H mspace = dwg->header_vars.BLOCK_RECORD_MSPACE;
+  const BITCODE_H pspace = dwg->header_vars.BLOCK_RECORD_PSPACE;
+  BITCODE_H layout;
+  if (ent->entmode == 1)
+    return true;
+  if (ent->entmode != 0 || !ent->ownerhandle
+      || !ent->ownerhandle->absolute_ref)
+    return false;
+  if (mspace && ent->ownerhandle->absolute_ref == mspace->absolute_ref)
+    return false;
+  if (pspace && ent->ownerhandle->absolute_ref == pspace->absolute_ref)
+    return true;
+  blk = dwg_ref_object ((Dwg_Data *)dwg, ent->ownerhandle);
+  if (!blk || blk->fixedtype != DWG_TYPE_BLOCK_HEADER || !blk->tio.object)
+    return false;
+  layout = blk->tio.object->tio.BLOCK_HEADER->layout;
+  return layout && layout->absolute_ref;
+}
+
+/* Whether the DXF writer writes the object, for the entries that refer to
+   it. The binary DXF writer has no unstable classes left out. */
+bool
+dxf_has_object (Bit_Chain *restrict dat, const Dwg_Object *restrict obj)
+{
+  if (!obj || obj->fixedtype == DWG_TYPE_UNKNOWN_OBJ)
+    return false;
+  if (obj->type < 500 || dat->opts & DWG_OPTS_DXFB)
+    return true;
+  return !dxf_variable_type_written (obj->parent, dat, (Dwg_Object *)obj);
 }
 
 /* process unsorted vertices until SEQEND. A pre-R13 target uses the vertex
@@ -3433,6 +3859,10 @@ decl_dxf_process_VERTEX (PFACE)
                                                                               \
       if (!_obj->has_attribs)                                                 \
         return 0;                                                             \
+      /* as the 66 in insert.spec */                                         \
+      if (dat->version < R_13b1 && dat->from_version >= R_2004a              \
+          && !_obj->num_owned)                                                \
+        return 0;                                                             \
       if (dat->version < R_13b1 ? !(_obj->num_owned && _obj->attribs)         \
                                 : (dat->version <= R_2000                     \
                                    && _obj->first_attrib                      \
@@ -3511,6 +3941,17 @@ decl_dxf_process_INSERT (ACIDBLOCKREFERENCE)
   if (!obj || !obj->parent)
     return DWG_ERR_INTERNALERROR;
   minimal = obj->parent->opts & DWG_OPTS_MINIMAL;
+  // r12 has no objects section: an object in an entity list (e.g. a
+  // DICTIONARY or XRECORD of the paper space block) cannot be written.
+  if (dat->version < R_13b1 && dat->from_version >= R_13b1
+      && obj->supertype != DWG_SUPERTYPE_ENTITY)
+    {
+      LOG_TRACE ("Skip %s %u in r12 DXF\n", obj->name, obj->index);
+      return 0;
+    }
+  if (dat->version < R_13b1 && dat->from_version >= R_13b1
+      && !dxf_r12_entity_ok (obj))
+    return dxf_r12_downconvert_entity (dat, obj);
   if (dat->version < R_13b1
       || (dat->from_version < R_13b1
           && obj->supertype == DWG_SUPERTYPE_ENTITY))
@@ -3642,7 +4083,17 @@ decl_dxf_process_INSERT (ACIDBLOCKREFERENCE)
     case DWG_TYPE_SHAPE:
       return dwg_dxf_SHAPE (dat, obj);
     case DWG_TYPE_VIEWPORT:
-      return minimal ? 0 : dwg_dxf_VIEWPORT (dat, obj);
+      if (minimal)
+        return 0;
+      // r12 has a single paper space: AutoCAD leaves out the viewports of
+      // the other layouts
+      if (dat->version < R_13b1 && dat->from_version >= R_13b1
+          && dxf_entity_in_pspace (obj) && !dxf_r12_in_pspace (obj))
+        return 0;
+      error = dwg_dxf_VIEWPORT (dat, obj);
+      if (dat->version < R_13b1 && dat->from_version >= R_13b1)
+        dxf_r12_mview_eed (dat, obj);
+      return error;
     case DWG_TYPE_ELLIPSE:
       return dwg_dxf_ELLIPSE (dat, obj);
     case DWG_TYPE_SPLINE:
@@ -3813,6 +4264,9 @@ dxf_common_entity_handle_data (Bit_Chain *restrict dat,
   int error = 0;
   BITCODE_BL vcount = 0;
 
+  if (dat->version < R_13b1 && dat->from_version >= R_13b1
+      && dxf_r12_in_pspace (obj))
+    VALUE_RS (1, 67);
   // clang-format off
   if (dat->version >= R_13b1)
     {
@@ -3822,6 +4276,533 @@ dxf_common_entity_handle_data (Bit_Chain *restrict dat,
   // clang-format on
 
   return error;
+}
+
+/* r12 (pre-r13) DXF of an r13+ drawing. AutoCAD rejects the whole file on
+   the first entity r12 does not have ("Undefined group code 10 for
+   object"). AutoCAD itself saves them exploded. Here, approximately: MTEXT
+   as one TEXT per line, ELLIPSE, SPLINE and LEADER as 3D polylines. The
+   other newer entities (HATCH, 3DSOLID, REGION, RAY, XLINE, MLINE, IMAGE,
+   WIPEOUT, TOLERANCE, MLEADER, TABLE, proxies...) are left out. */
+static int
+dxf_r12_entity_ok (const Dwg_Object *restrict obj)
+{
+  switch (obj->fixedtype)
+    {
+    case DWG_TYPE_LINE:
+    case DWG_TYPE_POINT:
+    case DWG_TYPE_CIRCLE:
+    case DWG_TYPE_ARC:
+    case DWG_TYPE_TRACE:
+    case DWG_TYPE_SOLID:
+    case DWG_TYPE_TEXT:
+    case DWG_TYPE_SHAPE:
+    case DWG_TYPE_BLOCK:
+    case DWG_TYPE_ENDBLK:
+    case DWG_TYPE_INSERT:
+    case DWG_TYPE_MINSERT:
+    case DWG_TYPE_ATTDEF:
+    case DWG_TYPE_ATTRIB:
+    case DWG_TYPE_POLYLINE_2D:
+    case DWG_TYPE_POLYLINE_3D:
+    case DWG_TYPE_POLYLINE_PFACE:
+    case DWG_TYPE_POLYLINE_MESH:
+    case DWG_TYPE_VERTEX_2D:
+    case DWG_TYPE_VERTEX_3D:
+    case DWG_TYPE_VERTEX_MESH:
+    case DWG_TYPE_VERTEX_PFACE:
+    case DWG_TYPE_VERTEX_PFACE_FACE:
+    case DWG_TYPE_SEQEND:
+    case DWG_TYPE__3DFACE:
+    case DWG_TYPE_VIEWPORT:
+    case DWG_TYPE_DIMENSION_ORDINATE:
+    case DWG_TYPE_DIMENSION_LINEAR:
+    case DWG_TYPE_DIMENSION_ALIGNED:
+    case DWG_TYPE_DIMENSION_ANG3PT:
+    case DWG_TYPE_DIMENSION_ANG2LN:
+    case DWG_TYPE_DIMENSION_RADIUS:
+    case DWG_TYPE_DIMENSION_DIAMETER:
+    case DWG_TYPE_LWPOLYLINE: // converted to POLYLINE_2D before
+    case DWG_TYPE_JUMP:
+      return 1;
+    default:
+      return 0;
+    }
+}
+
+/* r12 from r13+ is written with $HANDLING 1, and then AutoCAD needs a handle
+   on every entity ("No database handle specified for object"). The records
+   down-converted here get new handles above all existing ones, and
+   $HANDSEED is raised by an upper bound of their number before the header
+   is written (dxf_r12_handles_init), restored after the output. */
+static BITCODE_RLL r12_next_handle = 0;
+
+static BITCODE_RLL
+dxf_r12_bound (const Bit_Chain *restrict dat, const Dwg_Object *restrict obj)
+{
+  switch (obj->fixedtype)
+    {
+    case DWG_TYPE_MTEXT:
+      {
+        const Dwg_Entity_MTEXT *m = obj->tio.entity->tio.MTEXT;
+        size_t len;
+        if (!m->text)
+          return 0;
+        len = IS_FROM_TU (dat) ? bit_wcs2len ((BITCODE_TU)m->text)
+                               : strlen (m->text);
+        // at most one line per 2 chars (\P), plus the wrapped parts
+        return (BITCODE_RLL)(len / 2 + len / 125 + 2);
+      }
+    case DWG_TYPE_ELLIPSE:
+      return 66 + 2;
+    case DWG_TYPE_SPLINE:
+      {
+        const Dwg_Entity_SPLINE *s = obj->tio.entity->tio.SPLINE;
+        BITCODE_RLL n = (BITCODE_RLL)s->num_ctrl_pts * 8;
+        if (n < 16)
+          n = 16;
+        if (n > 4096)
+          n = 4096;
+        return n + 1 + s->num_fit_pts + 2;
+      }
+    case DWG_TYPE_LEADER:
+      return (BITCODE_RLL)obj->tio.entity->tio.LEADER->num_points + 2;
+    default:
+      return 0;
+    }
+}
+
+static BITCODE_RLL
+dxf_r12_handles_init (const Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
+{
+  BITCODE_RLL max = 0, extra = 0;
+  BITCODE_BL i;
+  for (i = 0; i < dwg->num_objects; i++)
+    {
+      const Dwg_Object *o = &dwg->object[i];
+      if (o->handle.value > max)
+        max = o->handle.value;
+      if (o->supertype == DWG_SUPERTYPE_ENTITY && o->tio.entity)
+        extra += dxf_r12_bound (dat, o);
+    }
+  if (dwg->header_vars.HANDSEED
+      && dwg->header_vars.HANDSEED->absolute_ref > max)
+    max = dwg->header_vars.HANDSEED->absolute_ref;
+  r12_next_handle = max + 1;
+  return r12_next_handle + extra;
+}
+
+static void
+dxf_r12_record (Bit_Chain *restrict dat, const Dwg_Object *restrict obj,
+                const char *restrict name)
+{
+  fprintf (dat->fh, "  0\r\n%s\r\n", name);
+  if (obj->parent->header_vars.HANDLING && r12_next_handle)
+    fprintf (dat->fh, "%3i\r\n" FMT_H "\r\n", 5, r12_next_handle++);
+  (void)dxf_common_entity_handle_data (dat, obj);
+}
+
+static void
+dxf_r12_point (Bit_Chain *restrict dat, const double x, const double y,
+               const double z, const int dxf)
+{
+  VALUE_RD (x, dxf);
+  VALUE_RD (y, dxf + 10);
+  VALUE_RD (z, dxf + 20);
+}
+
+/* a 3D polyline in WCS, so no OCS is needed */
+static void
+dxf_r12_polyline3d (Bit_Chain *restrict dat, const Dwg_Object *restrict obj,
+                    const BITCODE_3DPOINT *restrict pts, const BITCODE_BL num,
+                    const int closed)
+{
+  BITCODE_BL i;
+  if (num < 2)
+    return;
+  dxf_r12_record (dat, obj, "POLYLINE");
+  VALUE_RS (1, 66);
+  dxf_r12_point (dat, 0.0, 0.0, 0.0, 10);
+  VALUE_RS (closed ? 9 : 8, 70);
+  for (i = 0; i < num; i++)
+    {
+      dxf_r12_record (dat, obj, "VERTEX");
+      dxf_r12_point (dat, pts[i].x, pts[i].y, pts[i].z, 10);
+      VALUE_RS (32, 70);
+    }
+  dxf_r12_record (dat, obj, "SEQEND");
+}
+
+static int
+dxf_r12_ELLIPSE (Bit_Chain *restrict dat, const Dwg_Object *restrict obj)
+{
+  const Dwg_Entity_ELLIPSE *_obj = obj->tio.entity->tio.ELLIPSE;
+  BITCODE_3DPOINT n = _obj->extrusion, minor, *pts;
+  double len, t0 = _obj->start_angle, t1 = _obj->end_angle;
+  BITCODE_BL num, i;
+  int full;
+  len = sqrt (n.x * n.x + n.y * n.y + n.z * n.z);
+  if (len < 1e-12)
+    {
+      n.x = n.y = 0.0;
+      n.z = 1.0;
+      len = 1.0;
+    }
+  // minor axis = normal x major * ratio
+  minor.x = (n.y * _obj->sm_axis.z - n.z * _obj->sm_axis.y) / len
+            * _obj->axis_ratio;
+  minor.y = (n.z * _obj->sm_axis.x - n.x * _obj->sm_axis.z) / len
+            * _obj->axis_ratio;
+  minor.z = (n.x * _obj->sm_axis.y - n.y * _obj->sm_axis.x) / len
+            * _obj->axis_ratio;
+  while (t1 <= t0)
+    t1 += 2.0 * M_PI;
+  full = (t1 - t0) >= 2.0 * M_PI - 1e-9;
+  num = (BITCODE_BL)ceil (64.0 * (t1 - t0) / (2.0 * M_PI));
+  if (num < 4)
+    num = 4;
+  pts = (BITCODE_3DPOINT *)calloc (num + 1, sizeof (BITCODE_3DPOINT));
+  if (!pts)
+    return DWG_ERR_OUTOFMEM;
+  for (i = 0; i <= num; i++)
+    {
+      const double t = t0 + (t1 - t0) * i / num;
+      pts[i].x
+          = _obj->center.x + _obj->sm_axis.x * cos (t) + minor.x * sin (t);
+      pts[i].y
+          = _obj->center.y + _obj->sm_axis.y * cos (t) + minor.y * sin (t);
+      pts[i].z
+          = _obj->center.z + _obj->sm_axis.z * cos (t) + minor.z * sin (t);
+    }
+  dxf_r12_polyline3d (dat, obj, pts, full ? num : num + 1, full);
+  free (pts);
+  return 0;
+}
+
+#  define R12_MAX_DEGREE 16
+static int
+dxf_r12_SPLINE (Bit_Chain *restrict dat, const Dwg_Object *restrict obj)
+{
+  const Dwg_Entity_SPLINE *_obj = obj->tio.entity->tio.SPLINE;
+  const BITCODE_BL nc = _obj->num_ctrl_pts;
+  const int p = _obj->degree;
+  if (nc >= 2 && p >= 1 && p <= R12_MAX_DEGREE && _obj->ctrl_pts && _obj->knots
+      && _obj->num_knots == nc + p + 1)
+    {
+      // de Boor in homogeneous coordinates
+      const double u0 = _obj->knots[p], u1 = _obj->knots[nc];
+      BITCODE_BL num = nc * 8, i;
+      BITCODE_3DPOINT *pts;
+      if (num < 16)
+        num = 16;
+      if (num > 4096)
+        num = 4096;
+      if (!(u1 > u0))
+        return 0;
+      pts = (BITCODE_3DPOINT *)calloc (num + 1, sizeof (BITCODE_3DPOINT));
+      if (!pts)
+        return DWG_ERR_OUTOFMEM;
+      for (i = 0; i <= num; i++)
+        {
+          double d[R12_MAX_DEGREE + 1][4];
+          const double u = u0 + (u1 - u0) * i / num;
+          BITCODE_BL k = (BITCODE_BL)p;
+          int j, r;
+          while (k + 1 < nc && _obj->knots[k + 1] <= u)
+            k++;
+          for (j = 0; j <= p; j++)
+            {
+              const Dwg_SPLINE_control_point *c = &_obj->ctrl_pts[k - p + j];
+              const double w = _obj->rational && c->w > 0.0 ? c->w : 1.0;
+              d[j][0] = c->x * w;
+              d[j][1] = c->y * w;
+              d[j][2] = c->z * w;
+              d[j][3] = w;
+            }
+          for (r = 1; r <= p; r++)
+            for (j = p; j >= r; j--)
+              {
+                const double a0 = _obj->knots[k - p + j];
+                const double a1 = _obj->knots[k + 1 + j - r];
+                const double alpha = a1 > a0 ? (u - a0) / (a1 - a0) : 0.0;
+                int m;
+                for (m = 0; m < 4; m++)
+                  d[j][m] = (1.0 - alpha) * d[j - 1][m] + alpha * d[j][m];
+              }
+          if (d[p][3] == 0.0)
+            d[p][3] = 1.0;
+          pts[i].x = d[p][0] / d[p][3];
+          pts[i].y = d[p][1] / d[p][3];
+          pts[i].z = d[p][2] / d[p][3];
+        }
+      dxf_r12_polyline3d (dat, obj, pts, num + 1, 0);
+      free (pts);
+    }
+  else if (_obj->num_fit_pts >= 2 && _obj->fit_pts)
+    dxf_r12_polyline3d (dat, obj, _obj->fit_pts, _obj->num_fit_pts, 0);
+  else
+    LOG_WARN ("r12: SPLINE " FORMAT_HV " without usable points left out",
+              obj->handle.value);
+  return 0;
+}
+
+static int
+dxf_r12_LEADER (Bit_Chain *restrict dat, const Dwg_Object *restrict obj)
+{
+  const Dwg_Entity_LEADER *_obj = obj->tio.entity->tio.LEADER;
+  if (_obj->num_points >= 2 && _obj->points)
+    dxf_r12_polyline3d (dat, obj, _obj->points, _obj->num_points, 0);
+  return 0;
+}
+
+/* Splits the MTEXT at \P (and LF) into plain-text lines. Returns the
+   number of lines; *lines is malloc'ed, as each line. */
+static unsigned
+dxf_r12_mtext_lines (const char *restrict text, char ***restrict lines)
+{
+  unsigned num = 0;
+  size_t len = strlen (text), i, start = 0;
+  char *seg;
+  *lines = NULL;
+  for (i = 0; i <= len; i++)
+    {
+      int split = 0, skip = 0;
+      if (i == len)
+        split = 1;
+      else if (text[i] == '\\' && i + 1 < len && text[i + 1] == '\\')
+        {
+          i++; // an escaped backslash
+          continue;
+        }
+      else if (text[i] == '\\' && i + 1 < len && text[i + 1] == 'P')
+        split = 1, skip = 1;
+      else if (text[i] == '\n')
+        split = 1;
+      if (split)
+        {
+          char **tmp = (char **)realloc (*lines, (num + 1) * sizeof (char *));
+          if (!tmp)
+            return num;
+          *lines = tmp;
+          seg = (char *)malloc (i - start + 1);
+          if (!seg)
+            return num;
+          memcpy (seg, &text[start], i - start);
+          seg[i - start] = '\0';
+          (*lines)[num] = dwg_strip_mtext (seg);
+          free (seg);
+          if (!(*lines)[num])
+            return num;
+          num++;
+          // a TEXT holds at most 255 chars, and its text cannot be
+          // continued in 3. Wrap at a space.
+          // AutoCAD wraps at the MTEXT width instead: not done.
+          while (strlen ((*lines)[num - 1]) > 250)
+            {
+              char *l = (*lines)[num - 1], *rest;
+              size_t cut = 250;
+              while (cut > 125 && l[cut] != ' ')
+                cut--;
+              if (l[cut] != ' ')
+                { // no space: cut before a UTF-8 lead byte
+                  cut = 250;
+                  while (cut > 0 && ((unsigned char)l[cut] & 0xC0) == 0x80)
+                    cut--;
+                }
+              rest = strdup (&l[l[cut] == ' ' ? cut + 1 : cut]);
+              tmp = (char **)realloc (*lines, (num + 1) * sizeof (char *));
+              if (!rest || !tmp)
+                {
+                  free (rest);
+                  if (tmp)
+                    *lines = tmp;
+                  return num;
+                }
+              *lines = tmp;
+              l[cut] = '\0';
+              (*lines)[num++] = rest;
+            }
+          i += skip;
+          start = i + 1;
+        }
+    }
+  return num;
+}
+
+static int
+dxf_r12_MTEXT (Bit_Chain *restrict dat, const Dwg_Object *restrict obj)
+{
+  const Dwg_Data *dwg = obj->parent;
+  const Dwg_Entity_MTEXT *_obj = obj->tio.entity->tio.MTEXT;
+  char *text, **lines = NULL;
+  unsigned num, i;
+  double xx = _obj->x_axis_dir.x, xy = _obj->x_axis_dir.y, len, h, spacing,
+         top, rot;
+  int att = _obj->attachment, col, row;
+  const Dwg_Object *style
+      = _obj->style ? dwg_ref_object ((Dwg_Data *)dwg, _obj->style) : NULL;
+
+  if (!_obj->text)
+    return 0;
+  text = IS_FROM_TU (dat) ? bit_convert_TU ((BITCODE_TU)_obj->text)
+                          : strdup (_obj->text);
+  if (!text)
+    return DWG_ERR_OUTOFMEM;
+  num = dxf_r12_mtext_lines (text, &lines);
+  free (text);
+  len = sqrt (xx * xx + xy * xy);
+  if (len < 1e-12)
+    {
+      xx = 1.0;
+      xy = 0.0;
+      len = 1.0;
+    }
+  xx /= len;
+  xy /= len;
+  rot = atan2 (xy, xx) * 180.0 / M_PI;
+  h = _obj->text_height > 0.0 ? _obj->text_height : 1.0;
+  // AutoCAD's default line spacing is 5/3 of the text height
+  spacing = h * 5.0 / 3.0
+            * (_obj->linespace_factor > 0.0 ? _obj->linespace_factor : 1.0);
+  if (att < 1 || att > 9)
+    att = 1;
+  col = (att - 1) % 3;
+  row = (att - 1) / 3;
+  // the offset of the first baseline below the insertion point
+  top = h - (h + (num ? num - 1 : 0) * spacing) * row / 2.0;
+  for (i = 0; i < num; i++)
+    {
+      const double off = top + i * spacing;
+      // y axis = (-xy, xx)
+      const double px = _obj->ins_pt.x + xy * off;
+      const double py = _obj->ins_pt.y - xx * off;
+      if (lines[i] && *lines[i])
+        {
+          BITCODE_TU wstr = bit_utf8_to_TU (lines[i], 0);
+          dxf_r12_record (dat, obj, "TEXT");
+          dxf_r12_point (dat, px, py, _obj->ins_pt.z, 10);
+          VALUE_RD (h, 40);
+          if (wstr)
+            {
+              VALUE_TU (wstr, 1);
+              free (wstr);
+            }
+          if (fabs (rot) > 1e-9)
+            VALUE_RD (rot, 50);
+          if (style && style->fixedtype == DWG_TYPE_STYLE)
+            dxf_cvt_tablerecord (dat, style,
+                                 style->tio.object->tio.STYLE->name, 7);
+          if (col)
+            {
+              VALUE_RS (col, 72);
+              dxf_r12_point (dat, px, py, _obj->ins_pt.z, 11);
+            }
+        }
+      free (lines[i]);
+    }
+  free (lines);
+  return 0;
+}
+
+/* r12 from r13+: whether an entity lives in the (current) paper space, for
+   its 67. The entmode of an r2004+ entity is 0 (explicit owner) for all
+   layouts but the current one, so follow the owner, through the
+   INSERT/POLYLINE of an ATTRIB/VERTEX/SEQEND. Without 67, the paper space
+   entities and VIEWPORTs land in model space (AutoCAD: "INTERNAL ERROR:
+   !dbr12dxfin.cpp@2505"). */
+static int
+dxf_r12_in_pspace (const Dwg_Object *restrict obj)
+{
+  Dwg_Data *dwg = obj->parent;
+  const Dwg_Object *ps = dwg_paper_space_object (dwg);
+  const Dwg_Object *o = obj;
+  int depth = 0;
+  while (o && o->supertype == DWG_SUPERTYPE_ENTITY && o->tio.entity
+         && depth++ < 3)
+    {
+      const Dwg_Object_Entity *e = o->tio.entity;
+      if (e->entmode == 1)
+        return 1;
+      if (e->entmode == 2 || !e->ownerhandle || !e->ownerhandle->absolute_ref)
+        return 0;
+      if (ps && e->ownerhandle->absolute_ref == ps->handle.value)
+        return 1;
+      o = dwg_ref_object (dwg, e->ownerhandle);
+    }
+  return 0;
+}
+
+/* r12 VIEWPORTs carry their view in the ACAD "MVIEW" xdata, as AutoCAD
+   writes it (the r12 DXF reference): version 16, target, direction, twist,
+   height, center, lens, clips, view mode, circle zoom, fast zoom, UCS icon,
+   snap, grid, snap style, isopair, snap angle, base and spacing, grid
+   spacing, hide in plot, then the frozen layers. */
+static void
+dxf_r12_mview_eed (Bit_Chain *restrict dat, const Dwg_Object *restrict obj)
+{
+  Dwg_Data *dwg = obj->parent;
+  const Dwg_Entity_VIEWPORT *_obj = obj->tio.entity->tio.VIEWPORT;
+  const BITCODE_BL f = _obj->status_flag;
+  BITCODE_BL i;
+  fprintf (dat->fh, "1001\r\nACAD\r\n1000\r\nMVIEW\r\n1002\r\n{\r\n");
+  VALUE_RS (16, 1070);
+  dxf_r12_point (dat, _obj->view_target.x, _obj->view_target.y,
+                 _obj->view_target.z, 1010);
+  dxf_r12_point (dat, _obj->VIEWDIR.x, _obj->VIEWDIR.y, _obj->VIEWDIR.z, 1010);
+  VALUE_RD (_obj->VIEWTWIST, 1040);
+  VALUE_RD (_obj->VIEWSIZE, 1040);
+  VALUE_RD (_obj->VIEWCTR.x, 1040);
+  VALUE_RD (_obj->VIEWCTR.y, 1040);
+  VALUE_RD (_obj->LENSLENGTH, 1040);
+  VALUE_RD (_obj->FRONTZ, 1040);
+  VALUE_RD (_obj->BACKZ, 1040);
+  VALUE_RS (f & 0x1f, 1070); // view mode
+  VALUE_RS (_obj->circle_zoom, 1070);
+  VALUE_RS (1, 1070);                                   // fast zoom, always on
+  VALUE_RS ((f >> 5) & 3, 1070);                        // UCS icon
+  VALUE_RS (f & 0x100 ? 1 : 0, 1070);                   // snap
+  VALUE_RS (f & 0x200 ? 1 : 0, 1070);                   // grid
+  VALUE_RS (f & 0x400 ? 1 : 0, 1070);                   // snap style
+  VALUE_RS (f & 0x1000 ? 1 : f & 0x2000 ? 2 : 0, 1070); // isopair
+  VALUE_RD (_obj->SNAPANG, 1040);
+  VALUE_RD (_obj->SNAPBASE.x, 1040);
+  VALUE_RD (_obj->SNAPBASE.y, 1040);
+  VALUE_RD (_obj->SNAPUNIT.x, 1040);
+  VALUE_RD (_obj->SNAPUNIT.y, 1040);
+  VALUE_RD (_obj->GRIDUNIT.x, 1040);
+  VALUE_RD (_obj->GRIDUNIT.y, 1040);
+  VALUE_RS (f & 0x800 ? 1 : 0, 1070); // hidden in plot
+  fprintf (dat->fh, "1002\r\n{\r\n");
+  for (i = 0; _obj->frozen_layers && i < _obj->num_frozen_layers; i++)
+    {
+      Dwg_Object *lay = _obj->frozen_layers[i]
+                            ? dwg_ref_object (dwg, _obj->frozen_layers[i])
+                            : NULL;
+      if (lay && lay->fixedtype == DWG_TYPE_LAYER)
+        dxf_cvt_tablerecord (dat, lay, lay->tio.object->tio.LAYER->name, 1003);
+    }
+  fprintf (dat->fh, "1002\r\n}\r\n1002\r\n}\r\n");
+}
+
+static int
+dxf_r12_downconvert_entity (Bit_Chain *restrict dat,
+                            const Dwg_Object *restrict obj)
+{
+  switch (obj->fixedtype)
+    {
+    case DWG_TYPE_MTEXT:
+      return dxf_r12_MTEXT (dat, obj);
+    case DWG_TYPE_ELLIPSE:
+      return dxf_r12_ELLIPSE (dat, obj);
+    case DWG_TYPE_SPLINE:
+      return dxf_r12_SPLINE (dat, obj);
+    case DWG_TYPE_LEADER:
+      return dxf_r12_LEADER (dat, obj);
+    default:
+      LOG_WARN ("r12: %s " FORMAT_HV " left out", obj->name,
+                obj->handle.value);
+      return 0;
+    }
 }
 
 RETURNS_NONNULL
@@ -4037,8 +5018,9 @@ dxf_tables_write (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
         TABLE_WRITE_FIXUP_NUMENTRIES (VPORT);
         error |= dwg_dxf_VPORT_CONTROL (dat, ctrl);
         _ctrl->num_entries = num_entries;
-        // TODO how far back can DXF read 1000?
-        if (dat->version != dat->from_version && dat->from_version >= R_2000)
+        // Not before r13: AutoCAD rejects EED (1001) in an r12 table head.
+        if (dat->version != dat->from_version && dat->from_version >= R_2000
+            && dat->version >= R_13b1)
           {
             /* if saved from newer version, eg. AC1032: */
             VALUE_TVc ("ACAD", 1001) VALUE_TVc ("DbSaveVer", 1000) VALUE_RS (
@@ -4073,21 +5055,24 @@ dxf_tables_write (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
         TABLE_WRITE_FIXUP_NUMENTRIES (LTYPE);
         error |= dwg_dxf_LTYPE_CONTROL (dat, ctrl);
         _ctrl->num_entries = num_entries;
-        SINCE (R_12)
-        {
-          // first the 2 builtin ltypes: ByBlock, ByLayer, which don't count
-          // for num_entries
-          if ((obj = dwg_ref_object (dwg, dwg->header_vars.LTYPE_BYBLOCK))
-              && obj->type == DWG_TYPE_LTYPE)
-            {
-              error |= dwg_dxf_LTYPE (dat, obj);
-            }
-          if ((obj = dwg_ref_object (dwg, dwg->header_vars.LTYPE_BYLAYER))
-              && obj->type == DWG_TYPE_LTYPE)
-            {
-              error |= dwg_dxf_LTYPE (dat, obj);
-            }
-        }
+        // not in r12 from r13+, as AutoCAD writes it (else AUDIT reports a
+        // duplicate BYBLOCK linetype)
+        if (dat->version >= R_12
+            && !(dat->version < R_13b1 && dat->from_version >= R_13b1))
+          {
+            // first the 2 builtin ltypes: ByBlock, ByLayer, which don't count
+            // for num_entries
+            if ((obj = dwg_ref_object (dwg, dwg->header_vars.LTYPE_BYBLOCK))
+                && obj->type == DWG_TYPE_LTYPE)
+              {
+                error |= dwg_dxf_LTYPE (dat, obj);
+              }
+            if ((obj = dwg_ref_object (dwg, dwg->header_vars.LTYPE_BYLAYER))
+                && obj->type == DWG_TYPE_LTYPE)
+              {
+                error |= dwg_dxf_LTYPE (dat, obj);
+              }
+          }
         // here LTYPE_CONTINUOUS is already included
         for (i = 0; i < num_entries; i++)
           {
@@ -4472,7 +5457,11 @@ dxf_block_write (Bit_Chain *restrict dat, const Dwg_Object *restrict hdr,
   else
     obj = get_first_owned_entity (hdr); // first_entity or entities[0]
 
-  if (dat->version < R_13b1 && obj)
+  // a pre-r13 source only. From r13+, dwg_dxf_object writes the
+  // VERTEX/ATTRIB/SEQEND of a POLYLINE/INSERT itself, and the pre-r13 child
+  // scan of dxf_block_write would write the attribs a second time, after
+  // the SEQEND.
+  if (dat->version < R_13b1 && dat->from_version < R_13b1 && obj)
     {
       // Pre-R13: SEQEND/VERTEX are not in _hdr->entities[].
       // Iterate objects and for each POLYLINE/INSERT directly owned
@@ -4532,7 +5521,10 @@ dxf_block_write (Bit_Chain *restrict dat, const Dwg_Object *restrict hdr,
       while (obj)
         {
           if (obj->supertype == DWG_SUPERTYPE_ENTITY
-              && obj->fixedtype != DWG_TYPE_ENDBLK && obj->tio.entity != NULL
+              && obj->fixedtype != DWG_TYPE_ENDBLK
+              && obj->fixedtype != DWG_TYPE_BLOCK && obj->tio.entity != NULL
+              && !is_attrib_vertex (obj->fixedtype)
+              && obj->fixedtype != DWG_TYPE_SEQEND
               && (obj->tio.entity->entmode != 2
                   || (obj->tio.entity->ownerhandle != NULL
                       && obj->tio.entity->ownerhandle->absolute_ref
@@ -4718,7 +5710,15 @@ dxf_entities_write (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
       while (obj)
         {
           int i = obj->index;
-          error |= dwg_dxf_object (dat, obj, &i);
+          // a BLOCK/ENDBLK in an entity list belongs to BLOCKS only
+          if (obj->fixedtype != DWG_TYPE_BLOCK
+              && obj->fixedtype != DWG_TYPE_ENDBLK
+              // written by their POLYLINE/INSERT, also the VERTEX of a
+              // converted LWPOLYLINE (r12 has no VERTEX outside a
+              // POLYLINE)
+              && !is_attrib_vertex (obj->fixedtype)
+              && obj->fixedtype != DWG_TYPE_SEQEND)
+            error |= dwg_dxf_object (dat, obj, &i);
           obj = get_next_owned_block_entity (ms, obj); // until last_entity
         }
       if (ps)
@@ -4727,7 +5727,11 @@ dxf_entities_write (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
           while (obj)
             {
               int i = obj->index;
-              error |= dwg_dxf_object (dat, obj, &i);
+              if (obj->fixedtype != DWG_TYPE_BLOCK
+                  && obj->fixedtype != DWG_TYPE_ENDBLK
+                  && !is_attrib_vertex (obj->fixedtype)
+                  && obj->fixedtype != DWG_TYPE_SEQEND)
+                error |= dwg_dxf_object (dat, obj, &i);
               obj = get_next_owned_block_entity (ps, obj);
             }
         }
@@ -4951,6 +5955,8 @@ dwg_write_dxf (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
   const int minimal = dwg->opts & DWG_OPTS_MINIMAL;
   int error;
   bool repeat_blocks;
+  BITCODE_RS old_handling;
+  BITCODE_RLL old_handseed;
   // struct Dwg_Header *obj = &dwg->header;
 
   loglevel = dwg->opts & DWG_OPTS_LOGLEVEL;
@@ -4983,6 +5989,23 @@ dwg_write_dxf (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
   if (dwg->header.version <= R_2000 && dwg->header.from_version > R_2000)
     dwg_fixup_BLOCKS_entities (dwg);
 
+  if (dat->version < R_2000 && dat->from_version >= R_2000)
+    dxf_old_names_init (dat, dwg);
+  // r12 from r13+: the entities have handles, which their EED 1005 refer
+  // to. AutoCAD writes $HANDLING 1 and the entity handles (with 0, AUDIT
+  // reports unknown XData handles). Restored at the end of dwg_write_dxf.
+  old_handling = dwg->header_vars.HANDLING;
+  old_handseed = dwg->header_vars.HANDSEED
+                     ? dwg->header_vars.HANDSEED->absolute_ref
+                     : 0;
+  if (dat->version < R_13b1 && dat->from_version >= R_13b1)
+    {
+      const BITCODE_RLL seed = dxf_r12_handles_init (dat, dwg);
+      dwg->header_vars.HANDLING = 1;
+      if (dwg->header_vars.HANDSEED)
+        dwg->header_vars.HANDSEED->absolute_ref
+            = dwg->header_vars.HANDSEED->handleref.value = seed;
+    }
   VALUE_TV ((char *)dwg_api_package_string (), 999);
 
   // A minimal header requires only $ACADVER, $HANDSEED, and then ENTITIES
@@ -4992,9 +6015,10 @@ dwg_write_dxf (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
   if (!minimal || repeat_blocks)
     {
       // if downgraded to r13, but we still have classes, keep the
-      // classes
-      if ((dat->from_version >= R_13b1 && dwg->num_classes)
-          || dat->version >= R_2000)
+      // classes. Never for r12 and older: there is no CLASSES section.
+      if (dat->version >= R_13b1
+          && ((dat->from_version >= R_13b1 && dwg->num_classes)
+              || dat->version >= R_2000))
         {
           if (dxf_classes_write (dat, dwg) >= DWG_ERR_CRITICAL)
             goto fail;
@@ -5030,9 +6054,21 @@ dwg_write_dxf (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
       }
     }
   RECORD (EOF);
+  dxf_old_names_free ();
+  dwg->header_vars.HANDLING = old_handling;
+  if (dwg->header_vars.HANDSEED)
+    dwg->header_vars.HANDSEED->absolute_ref
+        = dwg->header_vars.HANDSEED->handleref.value = old_handseed;
+  r12_next_handle = 0;
 
   return 0;
 fail:
+  dxf_old_names_free ();
+  dwg->header_vars.HANDLING = old_handling;
+  if (dwg->header_vars.HANDSEED)
+    dwg->header_vars.HANDSEED->absolute_ref
+        = dwg->header_vars.HANDSEED->handleref.value = old_handseed;
+  r12_next_handle = 0;
   return 1;
 }
 AFL_GCC_POP

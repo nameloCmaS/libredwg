@@ -1238,7 +1238,9 @@ bit_read_DD (Bit_Chain *dat, double default_value)
 int
 bit_eq_DD (double value, double default_value)
 {
-  return fabs (value - default_value) < 1e-12;
+  /* bit-exact, as bit_write_DD: the compact encodings (e.g. INSERT
+     scale_flag 3 for a scale of 1.0) are for the exact default only */
+  return memcmp (&value, &default_value, sizeof (double)) == 0;
 }
 
 /** Write bit-double with default.
@@ -1248,7 +1250,10 @@ bit_write_DD (Bit_Chain *dat, double value, double default_value)
 {
   BITCODE_BB bits = 0;
 
-  if (fabs (value - default_value) < 1e-12)
+  /* bit-exact, no tolerance: e.g. a LINE end y that differs from the start
+     y in the 14th digit is not the default (AutoCAD writes those with mode
+     1) */
+  if (memcmp (&value, &default_value, sizeof (double)) == 0)
     bit_write_BB (dat, 0);
   else
     {
@@ -2238,13 +2243,17 @@ bit_write_T (Bit_Chain *restrict dat, BITCODE_T restrict s)
                                 length);
                       length = UINT16_MAX - 1;
                     }
-                  bit_write_BS (dat, (BITCODE_BS)(length + 1));
-                  if (length)
+                  // an empty string is length 0 without a NUL (e.g. an r2000
+                  // STYLE bigfont "")
+                  if (!length)
+                    bit_write_BS (dat, 0);
+                  else
                     {
+                      bit_write_BS (dat, (BITCODE_BS)(length + 1));
                       for (i = 0; i < length; i++)
                         bit_write_RC (dat, (unsigned char)str[i]);
+                      bit_write_RC (dat, 0);
                     }
-                  bit_write_RC (dat, 0);
                   free (str);
                 }
               else
@@ -2645,8 +2654,9 @@ bit_write_TU (Bit_Chain *restrict dat, BITCODE_TU restrict chain)
 {
   size_t i, length;
 
+  // r2007+ TU strings are stored without a terminating NUL
   if (chain)
-    length = bit_wcs2len (chain) + 1;
+    length = bit_wcs2len (chain);
   else
     length = 0;
   if (length > UINT16_MAX)

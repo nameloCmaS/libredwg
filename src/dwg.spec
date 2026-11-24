@@ -198,11 +198,11 @@ DWG_ENTITY (ATTRIB)
   // R2018+ multi-line ATTRIB stores its text in mtext.text. When
   // downconverting to an older version, substitute it into text_value.
   if (dat->version < R_2018
-      && (!FIELD_VALUE (text_value) || !*FIELD_VALUE (text_value))
-      && FIELD_VALUE (mtext).text && *FIELD_VALUE (mtext).text)
+      && bit_empty_T (dat, FIELD_VALUE (text_value))
+      && !bit_empty_T (dat, FIELD_VALUE (mtext).text))
     {
       free (FIELD_VALUE (text_value));
-      FIELD_VALUE (text_value) = dwg_strip_mtext (FIELD_VALUE (mtext).text);
+      FIELD_VALUE (text_value) = strip_mtext_T (dat, FIELD_VALUE (mtext).text);
     }
 #endif
   PRE (R_13b1)
@@ -354,7 +354,8 @@ DWG_ENTITY (ATTRIB)
     }
 
   SUBCLASS (AcDbAttribute);
-  DXF {
+  // r12: tag and flags are written in ATTRIB's PRE (R_13b1) block
+  DXF { SINCE (R_13b1) {
     SINCE (R_2010b) {
       FIELD_RC (is_locked_in_block, 280);
     }
@@ -367,7 +368,7 @@ DWG_ENTITY (ATTRIB)
     SINCE (R_2007a) {
       FIELD_B (lock_position_flag, 280);
     }
-  }
+  } }
   SINCE (R_2010b)
     {
       FIELD_RC (is_locked_in_block, 0);
@@ -408,12 +409,12 @@ DWG_ENTITY (ATTDEF)
   // R2018+ multi-line ATTDEF stores its text in mtext.text. When
   // downconverting to an older version, substitute it into default_value.
   if (dat->version < R_2018
-      && (!FIELD_VALUE (default_value) || !*FIELD_VALUE (default_value))
-      && FIELD_VALUE (mtext).text && *FIELD_VALUE (mtext).text)
+      && bit_empty_T (dat, FIELD_VALUE (default_value))
+      && !bit_empty_T (dat, FIELD_VALUE (mtext).text))
     {
       free (FIELD_VALUE (default_value));
       FIELD_VALUE (default_value)
-          = dwg_strip_mtext (FIELD_VALUE (mtext).text);
+          = strip_mtext_T (dat, FIELD_VALUE (mtext).text);
     }
 #endif
   PRE (R_13b1)
@@ -578,7 +579,8 @@ DWG_ENTITY (ATTDEF)
     }
 
   SUBCLASS (AcDbAttributeDefinition);
-  DXF {
+  // r12: prompt, tag and flags are written in ATTDEF's PRE (R_13b1) block
+  DXF { SINCE (R_13b1) {
     VALUE_RC (0, 280); // 0 = 2010+ (class_version)
     FIELD_T (prompt, 3);
     FIELD_T (tag, 2);
@@ -595,7 +597,7 @@ DWG_ENTITY (ATTDEF)
     SINCE (R_2018b) {
       FIELD_RC (mtext_type, 71); // 1=single line, 2=multi line attrib, 4=multi line attdef
     }
-  }
+  } }
   SINCE (R_2010b)
     {
       FIELD_RC (is_locked_in_block, 0);
@@ -683,6 +685,22 @@ DWG_ENTITY (BLOCK)
       VALUE_T (_hdr->name, 2);
     } else {
       BLOCK_NAME (name, 2);
+    }
+    // r12 DXF: the BLOCK needs its flags and base point (10) too, as
+    // AutoCAD writes them; AutoCAD rejects a BLOCK without the 10.
+    {
+      Dwg_Bitcode_3RD base_pt;
+      base_pt.x = _hdr ? _hdr->base_pt.x : _obj->base_pt.x;
+      base_pt.y = _hdr ? _hdr->base_pt.y : _obj->base_pt.y;
+      base_pt.z = _hdr ? _hdr->base_pt.z : 0.0;
+      VALUE_RS (_hdr ? _hdr->flag & 0x3f : 0, 70);
+      VALUE_3BD (base_pt, 10);
+      if (_hdr && bit_empty_T (dat, _obj->name)) {
+        VALUE_T (_hdr->name, 3);
+      } else {
+        BLOCK_NAME (name, 3);
+      }
+      VALUE_TFF ("", 1);
     }
   }
   SINCE (R_13b1)
@@ -781,7 +799,9 @@ DWG_ENTITY (MINSERT)
   SUBCLASS (AcDbMInsertBlock);
 #ifdef IS_DXF
     FIELD_HANDLE_NAME (block_header, 2, BLOCK_HEADER);
-    if (FIELD_VALUE (has_attribs))
+    if (FIELD_VALUE (has_attribs)
+        && !(dat->version < R_13b1 && dat->from_version >= R_2004a
+             && !FIELD_VALUE (num_owned)))
       FIELD_B (has_attribs, 66);
 #endif
   FIELD_3DPOINT (ins_pt, 10);
@@ -1645,7 +1665,7 @@ DWG_ENTITY (DIMENSION_LINEAR)
     FIELD_3BD (xline1_pt, 13);
     FIELD_3BD (xline2_pt, 14);
     FIELD_3BD (def_pt, 0);
-    FIELD_BD (oblique_angle, 52);
+    FIELD_BD0 (oblique_angle, 52);
     FIELD_BD0 (dim_rotation, 50);
     SUBCLASS (AcDbRotatedDimension);
 
@@ -2282,7 +2302,9 @@ DWG_ENTITY (VIEWPORT)
     FIELD_3RD (center, 10);
     FIELD_RD (width, 40);
     FIELD_RD (height, 41);
+#ifndef IS_DXF // VIEWPORT's DXF block writes 68 and 69
     FIELD_RS (id, 69);
+#endif
   }
   LATER_VERSIONS {
     FIELD_3BD (center, 10);
@@ -2309,14 +2331,78 @@ DWG_ENTITY (VIEWPORT)
       vp_block = dwg->header_vars.BLOCK_RECORD_PSPACE->obj;
     else if (_ent->entmode == 2 && dwg->header_vars.BLOCK_RECORD_MSPACE)
       vp_block = dwg->header_vars.BLOCK_RECORD_MSPACE->obj;
-    if (!vp_block || dxf_block_is_layout (dwg, vp_block))
+    // AutoCAD numbers only the viewports of the current layout. Those of
+    // the other layouts are off (0, 0) until their layout is current.
+    if (vp_block && dwg->header_vars.BLOCK_RECORD_PSPACE
+        && dwg->header_vars.BLOCK_RECORD_PSPACE->obj
+        && vp_block != dwg->header_vars.BLOCK_RECORD_PSPACE->obj
+        && dxf_block_is_layout (dwg, vp_block))
       {
+        FIELD_VALUE (on_off) = 0;
+        FIELD_VALUE (id) = 0;
+      }
+    else if (!vp_block || dxf_block_is_layout (dwg, vp_block))
+      {
+        // The overall viewport of the layout is id 1, the others 2, 3, ...
+        // (AUDIT reports a detail viewport with id 1). AutoCAD numbers them
+        // in the order of the layout's viewports list (r2004+), whose first
+        // entry is the overall viewport. Without the list, the layout's
+        // active_viewport is id 1 and the rest follow in written order.
+        int has_overall = 0, is_overall = 0;
+        BITCODE_BL list_id = 0, list_len = 0;
+        if (vp_block && vp_block->fixedtype == DWG_TYPE_BLOCK_HEADER)
+          {
+            Dwg_Object_BLOCK_HEADER *_bh
+                = vp_block->tio.object->tio.BLOCK_HEADER;
+            Dwg_Object *_lo = _bh && _bh->layout
+                                  ? dwg_ref_object (dwg, _bh->layout)
+                                  : NULL;
+            Dwg_Object_LAYOUT *_layout
+                = _lo && _lo->fixedtype == DWG_TYPE_LAYOUT
+                      ? _lo->tio.object->tio.LAYOUT
+                      : NULL;
+            if (_layout && _layout->num_viewports && _layout->viewports
+                && _layout->num_viewports < 10000)
+              {
+                BITCODE_BL _vi;
+                list_len = _layout->num_viewports;
+                for (_vi = 0; _vi < list_len; _vi++)
+                  if (_layout->viewports[_vi]
+                      && _layout->viewports[_vi]->absolute_ref
+                             == obj->handle.value)
+                    {
+                      list_id = _vi + 1;
+                      break;
+                    }
+              }
+            else if (_layout && _layout->active_viewport
+                     && _layout->active_viewport->absolute_ref)
+              {
+                has_overall = 1;
+                is_overall = _layout->active_viewport->absolute_ref
+                             == obj->handle.value;
+              }
+          }
         if (vp_block != dwg->last_viewport_block)
-          dwg->last_viewport_id = 0;
+          dwg->last_viewport_id
+              = list_len ? (BITCODE_RS)list_len : has_overall ? 1 : 0;
         dwg->last_viewport_block = vp_block;
-        dwg->last_viewport_id++;
-        FIELD_VALUE (on_off) = dwg->last_viewport_id;
-        FIELD_VALUE (id) = dwg->last_viewport_id;
+        if (list_id)
+          {
+            FIELD_VALUE (on_off) = (BITCODE_RS)list_id;
+            FIELD_VALUE (id) = (BITCODE_RS)list_id;
+          }
+        else if (is_overall)
+          {
+            FIELD_VALUE (on_off) = 1;
+            FIELD_VALUE (id) = 1;
+          }
+        else
+          {
+            dwg->last_viewport_id++;
+            FIELD_VALUE (on_off) = dwg->last_viewport_id;
+            FIELD_VALUE (id) = dwg->last_viewport_id;
+          }
       }
     else
       {
@@ -2400,7 +2486,7 @@ DWG_ENTITY (VIEWPORT)
     }
   }
   DXF {
-    FIELD_HANDLE (visualstyle, 5, 348);
+    FIELD_HANDLE0 (visualstyle, 5, 348);
   }
 
   SINCE (R_2007a) {
@@ -2417,24 +2503,24 @@ DWG_ENTITY (VIEWPORT)
   }
   VERSIONS (R_2000b, R_2002) {
     HANDLE_VECTOR (frozen_layers, num_frozen_layers, 5, 341); // hard pointer
-    FIELD_HANDLE (clip_boundary, 5, 340);
+    FIELD_HANDLE0 (clip_boundary, 5, 340);
   }
   SINCE (R_2004a) {
     HANDLE_VECTOR (frozen_layers, num_frozen_layers, 4, 331); // soft pointer
-    FIELD_HANDLE (clip_boundary, 5, 340);
+    FIELD_HANDLE0 (clip_boundary, 5, 340);
   }
   VERSIONS (R_2000b, R_2002) {
     FIELD_HANDLE (vport_entity_header, 5, 0);  // => VX
   }
   SINCE (R_2000b) {
-    FIELD_HANDLE (named_ucs, 5, 345);
-    FIELD_HANDLE (base_ucs, 5, 346);
+    FIELD_HANDLE0 (named_ucs, 5, 345);
+    FIELD_HANDLE0 (base_ucs, 5, 346);
   }
   SINCE (R_2007a) {
-    FIELD_HANDLE (background, 4, 332);
+    FIELD_HANDLE0 (background, 4, 332);
     FIELD_HANDLE (visualstyle, 5, 0);
-    FIELD_HANDLE (shadeplot, 4, 333);
-    FIELD_HANDLE (sun, 3, 361);
+    FIELD_HANDLE0 (shadeplot, 4, 333);
+    FIELD_HANDLE0 (sun, 3, 361);
   }
 
 DWG_ENTITY_END
@@ -2701,6 +2787,17 @@ DWG_OBJECT (DICTIONARY)
                      strEQc (text, "SPATIAL"))
               dxf = 360;
           }
+        {
+          // No entry for an object not written to the DXF (missing, of
+          // an undecoded class, or of a class left out of the DXF): AUDIT
+          // reports each as erased.
+          Dwg_Object *_item
+              = _obj->itemhandles[rcount1]
+                    ? dwg_ref_object (dwg, _obj->itemhandles[rcount1])
+                    : NULL;
+          if (!dxf_has_object (dat, _item))
+            continue;
+        }
         FIELD_T (texts[rcount1], 3);
         VALUE_HANDLE (_obj->itemhandles[rcount1], itemhandles, 2, dxf);
       }
@@ -2751,6 +2848,17 @@ DWG_OBJECT (DICTIONARYWDFLT)
       REPEAT (numitems, texts, T)
       {
         int dxf = FIELD_VALUE (is_hardowner) & 1 ? 360 : 350;
+        {
+          // No entry for an object not written to the DXF (missing, of
+          // an undecoded class, or of a class left out of the DXF): AUDIT
+          // reports each as erased.
+          Dwg_Object *_item
+              = _obj->itemhandles[rcount1]
+                    ? dwg_ref_object (dwg, _obj->itemhandles[rcount1])
+                    : NULL;
+          if (!dxf_has_object (dat, _item))
+            continue;
+        }
         FIELD_T (texts[rcount1], 3);
         VALUE_HANDLE (_obj->itemhandles[rcount1], itemhandles, 2, dxf);
       }
@@ -2881,7 +2989,13 @@ DWG_ENTITY (MTEXT)
   SINCE (R_2018)
   {
     FIELD_B (is_not_annotative, 0);
-    if (FIELD_VALUE (is_not_annotative))
+    if (FIELD_VALUE (is_not_annotative)
+#ifdef IS_DXF
+        // AutoCAD writes the DXF embedded object only for MTEXT with
+        // columns, and AUDIT reports any other MTEXT that has one.
+        && FIELD_VALUE (column_type) > 0 && FIELD_VALUE (column_type) <= 2
+#endif
+    )
       {
         // AnnotScaleObject
         DXF { VALUE_TFF ( "Embedded Object", 101 ); }
@@ -2892,8 +3006,9 @@ DWG_ENTITY (MTEXT)
         // redundant fields
         FIELD_BL (ignore_attachment, 0); // not in DXF. prev as BS
         DXF {
-          FIELD_3BD (ins_pt, 10);
-          FIELD_3BD (x_axis_dir, 11);
+          // as AutoCAD: 10 the x axis, 11 the insertion point
+          FIELD_3BD (x_axis_dir, 10);
+          FIELD_3BD (ins_pt, 11);
         } else {
           FIELD_3BD (x_axis_dir, 11);
           FIELD_3BD (ins_pt, 10);
@@ -2926,7 +3041,18 @@ DWG_ENTITY (MTEXT)
             FIELD_B (flow_reversed, 74);
             if (!FIELD_VALUE (auto_height) && FIELD_VALUE (column_type) == 2)
               {
+#ifdef IS_DXF
+                // AutoCAD writes 0.0 for the negative heights it stores
+                // (known for single columns: -extents_height or similar)
+                if (_obj->column_heights)
+                  for (vcount = 0; vcount < _obj->num_column_heights; vcount++)
+                    {
+                      double _h = _obj->column_heights[vcount];
+                      VALUE_BD (_h < 0.0 ? 0.0 : _h, 46);
+                    }
+#else
                 FIELD_VECTOR (column_heights, BD, num_column_heights, 46);
+#endif
               }
           }
       }
@@ -3401,10 +3527,16 @@ DWG_TABLE (LAYER)
   SINCE (R_2007a) {
     ENCODER {
 #ifndef DEBUG_CLASSES
-      if (_obj->material)
+      // Keep a material that is written (usually "Global"). Only clear a
+      // reference that does not resolve to a MATERIAL.
+      if (_obj->material && _obj->material->absolute_ref)
         {
-          _obj->material->absolute_ref = 0;
-          _obj->material->handleref.value = 0;
+          Dwg_Object *_mat = dwg_ref_object (dwg, _obj->material);
+          if (!_mat || _mat->fixedtype != DWG_TYPE_MATERIAL)
+            {
+              _obj->material->absolute_ref = 0;
+              _obj->material->handleref.value = 0;
+            }
         }
 #endif
     }
@@ -3485,6 +3617,33 @@ DWG_TABLE (STYLE)
     FIELD_RC (generation, 71);
     LOG_TEXT_GENERATION
     FIELD_RD (last_height, 42);
+#ifdef IS_DXF
+    // r12 has no TrueType fonts. AutoCAD writes txt for a .ttf/.otf/.ttc
+    // or empty font file (AUDIT reports a duplicate STYLE name with an
+    // empty one).
+    if (dat->from_version >= R_13b1)
+      {
+        char *_f = IS_FROM_TU (dat)
+                       ? bit_convert_TU ((BITCODE_TU)_obj->font_file)
+                       : _obj->font_file;
+        const size_t _l = _f ? strlen (_f) : 0;
+        char _ext[5] = { 0 };
+        if (_l >= 4)
+          for (int _k = 0; _k < 4; _k++)
+            {
+              const char _c = _f[_l - 4 + _k];
+              _ext[_k] = (_c >= 'A' && _c <= 'Z') ? (char)(_c + 32) : _c;
+            }
+        if (!_l || !strcmp (_ext, ".ttf") || !strcmp (_ext, ".otf")
+            || !strcmp (_ext, ".ttc"))
+          VALUE_TFF ("txt", 3)
+        else
+          FIELD_TFv (font_file, 64, 3);
+        if (IS_FROM_TU (dat))
+          free (_f);
+      }
+    else
+#endif
     FIELD_TFv (font_file, 64, 3);
     SINCE (R_2_4)
       FIELD_TFv (bigfont_file, 64, 4);
@@ -4773,8 +4932,9 @@ DWG_ENTITY (HATCH)
                       REPEAT3 (segx[rcount2].num_control_points, control_points, Dwg_HATCH_ControlPoint)
                       REPEAT_BLOCK
                           SUB_FIELD_2RD (control_points[rcount3], point, 10);
+                          // DXF: the weights are 42 (40 are the knots)
                           if (FIELD_VALUE (segx[rcount2].is_rational))
-                            SUB_FIELD_BD (control_points[rcount3], weight, 40)
+                            SUB_FIELD_BD (control_points[rcount3], weight, 42)
                           SET_PARENT (control_points[rcount3], &FIELD_VALUE (segx[rcount2]));
                       END_REPEAT_BLOCK
                       END_REPEAT (control_points);
@@ -5044,8 +5204,9 @@ DWG_ENTITY (MPOLYGON)
                       REPEAT3 (segx[rcount2].num_control_points, control_points, Dwg_HATCH_ControlPoint)
                       REPEAT_BLOCK
                           SUB_FIELD_2RD (control_points[rcount3], point, 10);
+                          // DXF: the weights are 42 (40 are the knots)
                           if (FIELD_VALUE (segx[rcount2].is_rational))
-                            SUB_FIELD_BD (control_points[rcount3], weight, 40)
+                            SUB_FIELD_BD (control_points[rcount3], weight, 42)
                           SET_PARENT (control_points[rcount3], &FIELD_VALUE (segx[rcount2]));
                       END_REPEAT_BLOCK
                       END_REPEAT (control_points);
@@ -5805,10 +5966,11 @@ DWG_ENTITY (PROXY_ENTITY)
   SINCE (R_2000b) {
     FIELD_BL (class_id, 91); // R2000+, ODA 20.4.90
   }
+  // as PROXY_OBJECT: version | maint_version << 16 (ODA 20.4.90), not << 8
   PRE (R_2018) {
     FIELD_BLx (version, 95);
-    FIELD_VALUE (maint_version) = FIELD_VALUE(version) >> 8;
-    FIELD_VALUE (dwg_version) = FIELD_VALUE(version) & 0xff;
+    FIELD_VALUE (maint_version) = FIELD_VALUE (version) >> 16;
+    FIELD_VALUE (dwg_version) = FIELD_VALUE (version) & 0xffff;
     LOG_TRACE ("> maint_version: %x\n", _obj->maint_version);
     LOG_TRACE ("> dwg_version: %x\n", _obj->dwg_version);
   }
@@ -5816,14 +5978,15 @@ DWG_ENTITY (PROXY_ENTITY)
   // from DXF or an older version only DXF 95 is set
   if (!FIELD_VALUE (dwg_version) && !FIELD_VALUE (maint_version))
     {
-      FIELD_VALUE (maint_version) = FIELD_VALUE (version) >> 8;
-      FIELD_VALUE (dwg_version) = FIELD_VALUE (version) & 0xff;
+      FIELD_VALUE (maint_version) = FIELD_VALUE (version) >> 16;
+      FIELD_VALUE (dwg_version) = FIELD_VALUE (version) & 0xffff;
     }
 #endif
   SINCE (R_2018) {
     FIELD_BLx (dwg_version, 0);
     FIELD_BLx (maint_version, 0);
-    FIELD_VALUE (version) = (FIELD_VALUE(maint_version) << 8) + FIELD_VALUE(dwg_version);
+    FIELD_VALUE (version)
+        = (FIELD_VALUE (maint_version) << 16) | FIELD_VALUE (dwg_version);
     DXF {
       FIELD_BLx (version, 95);
     }
@@ -5993,20 +6156,61 @@ DWG_OBJECT (PROXY_OBJECT)
   SINCE (R_2000b) {
     FIELD_BL (class_id, 91); // R2000+, ODA 20.4.90
   }
+  // AC1018 only: a TV "cn:" + the class's C++ name follows class_id
+  // ("cn:AeccDbTreeNode", with the NUL in the length), in every proxy of
+  // AutoCAD's R2004 files. Not in its R2000 files, not in r2007+ (the
+  // version follows class_id there). Not in ODA 20.4.90. Derived from the
+  // class when writing, so it is not stored.
+  VERSIONS (R_2004a, R_2004)
+  {
+#if defined(IS_DECODER)
+    {
+      BITCODE_TV cn = bit_read_TV (dat);
+      LOG_TRACE ("classname: \"%s\" [TV 0]\n", cn ? (char *)cn : "");
+      free (cn);
+    }
+#elif defined(IS_ENCODER)
+    {
+      char cn[512];
+      char *cpp = NULL;
+      if (_obj->class_id >= 500
+          && _obj->class_id - 500 < (BITCODE_BL)dwg->num_classes)
+        {
+          const Dwg_Class *klass = &dwg->dwg_class[_obj->class_id - 500];
+          if (klass->cppname)
+            cpp = dwg->header.from_version >= R_2007
+                      ? bit_convert_TU ((BITCODE_TU)klass->cppname)
+                      : strdup (klass->cppname);
+        }
+      snprintf (cn, sizeof (cn), "cn:%s", cpp ? cpp : "");
+      free (cpp);
+      bit_write_TV (dat, (BITCODE_TV)cn);
+      LOG_TRACE ("classname: \"%s\" [TV 0]\n", cn);
+    }
+#endif
+  }
+  // ODA 20.4.90: before R2018 "a bitwise OR of the version and the
+  // maintenance version, shifted 16 bits to the left". AutoCAD writes e.g.
+  // 95 = 14811165 = 226 << 16 | 29 before R2018, and 71 = 29 and 97 = 226 in
+  // its R2018 DXF. AUDIT reports a proxy with the version shifted by 8
+  // (0xE21D) as ePermanentlyErased.
   PRE (R_2018) {
     FIELD_BLx (version, 95);
-    FIELD_VALUE (maint_version) = FIELD_VALUE(version) >> 8;
-    FIELD_VALUE (dwg_version) = FIELD_VALUE(version) & 0xff;
+    FIELD_VALUE (maint_version) = FIELD_VALUE (version) >> 16;
+    FIELD_VALUE (dwg_version) = FIELD_VALUE (version) & 0xffff;
     LOG_TRACE ("> maint_version: %x\n", _obj->maint_version);
     LOG_TRACE ("> dwg_version: %x\n", _obj->dwg_version);
   }
   SINCE (R_2018) {
-    FIELD_BLx (dwg_version, 0);
-    FIELD_BLx (maint_version, 0);
-    FIELD_VALUE (version) = (FIELD_VALUE(maint_version) << 8) + FIELD_VALUE(dwg_version);
     DXF {
-      FIELD_BLx (version, 95);
+      FIELD_BL (dwg_version, 71);
+      FIELD_BL (maint_version, 97);
+    } else {
+      FIELD_BLx (dwg_version, 0);
+      FIELD_BLx (maint_version, 0);
     }
+    FIELD_VALUE (version)
+        = (FIELD_VALUE (maint_version) << 16) | FIELD_VALUE (dwg_version);
   }
   SINCE (R_2000b)
   {
@@ -6049,7 +6253,13 @@ DWG_OBJECT (PROXY_OBJECT)
   }
   ENCODER {
     LOG_TRACE ("data_numbits: " FORMAT_BL " [ 93]\n", _obj->data_numbits);
-    bit_write_bits (dat, _obj->data, _obj->data_numbits);
+#ifdef IS_ENCODER // encode.c's static function
+    if (dat->version < R_2007 && dwg->header.from_version >= R_2007
+        && !(dwg->opts & DWG_OPTS_INDXF))
+      encode_proxy_data_pre_r2007 (dat, _obj->data, _obj->data_numbits);
+    else
+#endif
+      bit_write_bits (dat, _obj->data, _obj->data_numbits);
   }
   DXF_OR_PRINT {
     unsigned bytes = _obj->data_numbits / 8;
@@ -6064,9 +6274,11 @@ DWG_OBJECT (PROXY_OBJECT)
 #ifdef IS_ENCODER
   {
     // the raw data of a r2007+ DWG already holds the string stream and its
-    // footer, also via JSON. Not so from DXF or across versions.
+    // footer, also via JSON, and for any r2007+ output: AutoCAD's R2013 and
+    // R2018 records of the same proxy have the same data, with no second
+    // footer. Not so from DXF or for pre-r2007 output.
     Bit_Chain *_ostr = str_dat;
-    str_dat = (dat->version >= R_2007 && dwg->header.from_version == dat->version
+    str_dat = (dat->version >= R_2007 && dwg->header.from_version >= R_2007
                && !(dwg->opts & DWG_OPTS_INDXF)) ? dat : _ostr;
     START_OBJECT_HANDLE_STREAM;
   }

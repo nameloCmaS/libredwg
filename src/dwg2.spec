@@ -158,7 +158,7 @@ DWG_OBJECT (SORTENTSTABLE)
   hdl_dat = str_dat;
 
   START_OBJECT_HANDLE_STREAM;
-  FIELD_HANDLE (block_owner, 4, 0); // mspace or pspace
+  FIELD_HANDLE (block_owner, 4, 330); // mspace or pspace
   HANDLE_VECTOR_N (ents, FIELD_VALUE (num_ents), 4, 0);
 
   DXF {
@@ -1045,9 +1045,49 @@ DWG_ENTITY_END
 // See TABLE and p20.4.101
 // Added with r2005. unstable for r2010+
 // TABLESTYLE only contains the Table (R24), _Title, _Header and _Data cell style.
+// In the DXF AutoCAD writes the classic table style for all versions, with
+// the row styles data, title, header. The r2010+ CELLSTYLE structure is not
+// DXF: AUDIT reports a TABLESTYLE written with it.
+#define Rowstyle_dxf_fields(rs)                                               \
+  FIELD_HANDLE (rs.text_style, 5, 7);                                         \
+  FIELD_BD (rs.text_height, 140);                                             \
+  FIELD_BS (rs.text_alignment, 170);                                          \
+  FIELD_CMTC (rs.text_color, 62);                                             \
+  FIELD_CMTC (rs.fill_color, 63);                                             \
+  FIELD_B (rs.has_bgcolor, 283);                                              \
+  SINCE (R_2007a)                                                             \
+  {                                                                           \
+    FIELD_BL (rs.data_type, 90);                                              \
+    FIELD_BL (rs.unit_type, 91);                                              \
+    FIELD_TU (rs.format_string, 1);                                           \
+  }                                                                           \
+  Border_fields (rs, top_border, 0);                                          \
+  Border_fields (rs, hor_border, 1);                                          \
+  Border_fields (rs, bot_border, 2);                                          \
+  Border_fields (rs, left_border, 3);                                         \
+  Border_fields (rs, vert_border, 4);                                         \
+  Border_fields (rs, right_border, 5)
+
 DWG_OBJECT (TABLESTYLE)
   HANDLE_UNKNOWN_BITS;
   SUBCLASS (AcDbTableStyle)
+#ifdef IS_DXF
+  if (dwg->header.from_version > R_2007)
+    downconvert_TABLESTYLE ((Dwg_Object *)obj);
+  SINCE (R_2010b) {
+    VALUE_RC (0, 280); // class version
+  }
+  FIELD_T (name, 3);
+  FIELD_BS (flow_direction, 70);
+  FIELD_BS (flags, 71);
+  FIELD_BD (horiz_cell_margin, 40);
+  FIELD_BD (vert_cell_margin, 41);
+  FIELD_B (is_title_suppressed, 280);
+  FIELD_B (is_header_suppressed, 281);
+  Rowstyle_dxf_fields (data_rowstyle);
+  Rowstyle_dxf_fields (title_rowstyle);
+  Rowstyle_dxf_fields (header_rowstyle);
+#else
   UNTIL (R_2007) {
 #if defined IS_ENCODER || defined IS_DXF
     // first, it sets the margins
@@ -1115,6 +1155,7 @@ DWG_OBJECT (TABLESTYLE)
     Rowstyle_fields (title_rowstyle);
     Rowstyle_fields (header_rowstyle);
   }
+#endif /* IS_DXF */
   START_OBJECT_HANDLE_STREAM;
 DWG_OBJECT_END
 
@@ -2037,6 +2078,11 @@ DWG_OBJECT_END
   SINCE (R_2013b)                                                             \
   {                                                                           \
     _obj->is_r2013 = 1;                                                       \
+  }                                                                           \
+  /* 0 before r2013, as AutoCAD writes it (no aap_version then) */            \
+  ENCODER {                                                                   \
+    PRE (R_2013b)                                                             \
+      _obj->is_r2013 = 0;                                                     \
   }                                                                           \
   FIELD_BS (is_r2013, 90);                                                    \
   SINCE (R_2013b)                                                             \
@@ -3238,7 +3284,23 @@ DWG_OBJECT_END
 #define AcDbAssocAction_fields                                                \
   SUBCLASS (AcDbAssocAction);                                                 \
   /* until r2010: 1, 2013+: 2 */                                              \
-  FIELD_BS (class_version, 90);                                               \
+  /* AutoCAD writes 1 to r2010 and older, without the owned params            \
+     and values. AutoCAD cannot read r2010 output with 2. The object          \
+     keeps its class_version, which free() follows. */                        \
+  ENCODER {                                                                   \
+    if (dat->version < R_2013b && FIELD_VALUE (class_version) > 1)            \
+      {                                                                       \
+        VALUE_BS (1, 90);                                                     \
+      }                                                                       \
+    else                                                                      \
+      {                                                                       \
+        FIELD_BS (class_version, 90);                                         \
+      }                                                                       \
+  }                                                                           \
+  else                                                                        \
+  {                                                                           \
+    FIELD_BS (class_version, 90);                                             \
+  }                                                                           \
   /* 0 WellDefined, 1 UnderConstrained, 2 OverConstrained,                    \
      3 Inconsistent, 4 NotEvaluated, 5 NotAvailable,                          \
      6 RejectedByClient */                                                    \
@@ -3260,16 +3322,21 @@ DWG_OBJECT_END
   END_REPEAT (deps);                                                          \
   if (FIELD_VALUE (class_version) > 1)                                        \
     {                                                                         \
-      VALUE_BS (0, 90);                                                       \
-      FIELD_BL (num_owned_params, 90);                                        \
-      HANDLE_VECTOR (owned_params, num_owned_params, 3, 360);                 \
-      VALUE_BS (0, 90);                                                       \
-      FIELD_BL (num_values, 90);                                              \
-      REPEAT (num_values, values, Dwg_VALUEPARAM)                             \
-      REPEAT_BLOCK                                                            \
-        AcDbValueParam_fields (values[rcount1]);                              \
-      END_REPEAT_BLOCK                                                        \
-      END_REPEAT (values);                                                    \
+      int with_params = 1;                                                    \
+      ENCODER { with_params = dat->version >= R_2013b; }                      \
+      if (with_params)                                                        \
+        {                                                                     \
+          VALUE_BS (0, 90);                                                   \
+          FIELD_BL (num_owned_params, 90);                                    \
+          HANDLE_VECTOR (owned_params, num_owned_params, 3, 360);             \
+          VALUE_BS (0, 90);                                                   \
+          FIELD_BL (num_values, 90);                                          \
+          REPEAT (num_values, values, Dwg_VALUEPARAM)                         \
+          REPEAT_BLOCK                                                        \
+            AcDbValueParam_fields (values[rcount1]);                          \
+          END_REPEAT_BLOCK                                                    \
+          END_REPEAT (values);                                                \
+        }                                                                     \
     }
 
 // (varies) stable
@@ -3394,6 +3461,14 @@ DWG_OBJECT_END
   SUBCLASS (AcDbBlockElement);                  \
   FIELD_T (name, 300);                          \
   DECODER {                                     \
+    FIELD_BL (be_major, 98);                    \
+    FIELD_BL (be_minor, 99);                    \
+  } else if (FIELD_VALUE (be_major) && !IF_IS_DXF \
+             && dat->version >= R_2007a) {      \
+    /* keep the version of the element:        \
+       AutoCAD rejects a BLOCKSCALEACTION      \
+       with 29 for a 377 element ("not a       \
+       valid drawing") */                      \
     FIELD_BL (be_major, 98);                    \
     FIELD_BL (be_minor, 99);                    \
   } else {                                      \
@@ -3628,7 +3703,10 @@ DWG_OBJECT_END
 
 DWG_OBJECT (BLOCKLOOKUPGRIP)
   AcDbBlockGrip_fields; // lgtm[cpp/use-after-free] codeql[cpp/use-after-free]
-  SUBCLASS (AcDbBlockLookupGrip);
+  // AcDbBlockLookUpGrip with "LookUp", as AutoCAD writes this marker
+  // (the CLASSES section has "Lookup"); AutoCAD rejects the other
+  // spelling.
+  SUBCLASS (AcDbBlockLookUpGrip);
   START_OBJECT_HANDLE_STREAM;
 DWG_OBJECT_END
 
@@ -3699,6 +3777,13 @@ DWG_OBJECT (BLOCKSCALEACTION)
   // codes 94-96, 303-305 into conn_pts[2..4]; [0..1] are the two
   // WithBasePt connection points. starting at 0 would overwrite them.
   BlockAction_ConnectionPts (conn_pts, 2, 3, 92, 301);
+#ifndef IS_DXF
+  // AutoCAD has one more byte, 0 in all objects seen, before the strings,
+  // in its R2000 and R2004 files too (the handle stream starts 8 bits
+  // later). AutoCAD rejects a file without it.
+  ENCODER { bit_write_RC (dat, 0); }
+  DECODER { (void)bit_read_RC (dat); }
+#endif
   START_OBJECT_HANDLE_STREAM;
 DWG_OBJECT_END
 
@@ -3785,8 +3870,14 @@ DWG_ENTITY (PLANESURFACE)
   COMMON_ENTITY_HANDLE_DATA;
 DWG_ENTITY_END
 
+/* AutoCAD writes class_version 3 before R2010 and 4 since (all context \
+   data classes seen in AutoCAD's R2000-R2018 DXF). */                  \
 #define AcDbObjectContextData_fields                                    \
   SUBCLASS (AcDbObjectContextData);                                     \
+  ENCODER {                                                             \
+    if (dat->version < R_2010b && FIELD_VALUE (class_version) > 3)      \
+      FIELD_VALUE (class_version) = 3;                                  \
+  }                                                                     \
   FIELD_BS (class_version, 70);                                         \
   FIELD_B (is_default, 290)
 
@@ -4099,25 +4190,96 @@ DWG_ENTITY_END
 DWG_OBJECT (MTEXTATTRIBUTEOBJECTCONTEXTDATA)
   AcDbAnnotScaleObjectContextData_fields;
   AcDbTextObjectContextData_fields;
+  // no AcDbMTextAttributeObjectContextData marker in AutoCAD's DXF;
+  // AutoCAD 2027 rejects one
+#ifndef IS_DXF
   SUBCLASS (AcDbMTextAttributeObjectContextData);
+#endif
   FIELD_B (enable_context, 290);
-  // if scale is not 1:1
+  // a multi-line attribute: an embedded MTEXT context follows, as in
+  // AutoCAD's DXF (101 "Embedded Object") and DWG (its R2004 and R2013
+  // records), not an AcDbScale.
   if (FIELD_VALUE (enable_context))
     {
-      /*
-      DECODER {
-        dwg_add_object (dwg);
-        _obj->context = &dwg->object[dwg->num_objects - 1];
-        dwg_setup_SCALE (_obj->context);
-      } */
       DXF { VALUE_TFF ( "Embedded Object", 101 ); }
-      //CALL_SUBCLASS (_obj->context, SCALE, AcDbScale);
-      SUBCLASS (AcDbScale);
-      SUB_FIELD_BS (context, flag, 70); // always 0
-      SUB_FIELD_T (context, name, 300);
-      SUB_FIELD_BD (context, paper_units, 140);
-      SUB_FIELD_BD (context, drawing_units, 141);
-      SUB_FIELD_B (context, is_unit_scale, 290);
+      // the embedded object's common data: BL num_reactors (0),
+      // B is_xdic_missing (1), r2013+ B has_ds_data (0). "101" in AutoCAD's
+      // R2004 records, "1010" in its R2013 ones.
+#if defined(IS_DECODER)
+      {
+        const BITCODE_BL nr = bit_read_BL (dat);
+        const BITCODE_B xm = bit_read_B (dat);
+        LOG_TRACE ("context.num_reactors: " FORMAT_BL ", is_xdic_missing: %d"
+                   " [BL B]\n", nr, (int)xm);
+        SINCE (R_2013b)
+        {
+          const BITCODE_B ds = bit_read_B (dat);
+          LOG_TRACE ("context.has_ds_data: %d [B]\n", (int)ds);
+        }
+        if (nr || !xm)
+          {
+            LOG_ERROR ("embedded context with reactors or an xdictionary");
+            return DWG_ERR_VALUEOUTOFBOUNDS;
+          }
+      }
+#elif defined(IS_ENCODER)
+      bit_write_BL (dat, 0);
+      bit_write_B (dat, 1);
+      SINCE (R_2013b) { bit_write_B (dat, 0); }
+#endif
+      SUBCLASS (AcDbObjectContextData);
+      ENCODER {
+        if (dat->version < R_2010b && _obj->context.class_version > 3)
+          _obj->context.class_version = 3;
+      }
+      SUB_FIELD_BS (context, class_version, 70);
+      SUB_FIELD_B (context, is_default, 290);
+      SUBCLASS (AcDbAnnotScaleObjectContextData);
+      // the embedded object's own owner handle, a null 4.0.0 in AutoCAD's
+      // records, comes before its scale handle
+#if defined(IS_DECODER)
+      {
+        Dwg_Handle own = { 0, 0, 0, 0 };
+        if (bit_read_H (hdl_dat, &own))
+          return DWG_ERR_INVALIDHANDLE;
+        LOG_TRACE ("context.ownerhandle: " FORMAT_H " [H 0]\n", ARGS_H (own));
+      }
+#elif defined(IS_ENCODER)
+      {
+        Dwg_Handle own = { 4, 0, 0, 0 };
+        bit_write_H (hdl_dat, &own);
+        LOG_TRACE ("context.ownerhandle: 4.0.0 [H 0]\n");
+      }
+#endif
+      SUB_FIELD_HANDLE (context, scale, 2, 340);
+      SUB_FIELD_BL (context, attachment, 70);
+      SUB_FIELD_3BD (context, x_axis_dir, 10);
+      SUB_FIELD_3BD (context, ins_pt, 11);
+      SUB_FIELD_BD (context, rect_width, 40);
+      SUB_FIELD_BD (context, rect_height, 41);
+      SUB_FIELD_BD (context, extents_width, 42);
+      SUB_FIELD_BD (context, extents_height, 43);
+      SUB_FIELD_BL (context, column_type, 71);
+      if (_obj->context.column_type > 2)
+        {
+          LOG_ERROR ("Invalid context.column_type %u",
+                     (unsigned)_obj->context.column_type);
+          _obj->context.column_type = 0;
+          return DWG_ERR_VALUEOUTOFBOUNDS;
+        }
+      if (_obj->context.column_type)
+        {
+          SUB_FIELD_BL (context, num_column_heights, 72);
+          SUB_FIELD_BD (context, column_width, 44);
+          SUB_FIELD_BD (context, gutter, 45);
+          SUB_FIELD_B (context, auto_height, 73);
+          SUB_FIELD_B (context, flow_reversed, 74);
+          if (!_obj->context.auto_height && _obj->context.column_type == 2)
+            {
+              SUB_FIELD_VECTOR (context, column_heights, BD,
+                                num_column_heights, 46);
+            }
+        }
     }
   START_OBJECT_HANDLE_STREAM;
 DWG_OBJECT_END
@@ -6386,11 +6548,36 @@ DWG_OBJECT_END
   SUBCLASS (AcDbAssocArrayActionBody);                      \
   FIELD_BL (aaab_version, 90);                              \
   FIELD_T (paramblock, 1);                                  \
-  FIELD_VECTOR_N (transmatrix, BD, 16, 40)
+  /* The parameters object of class paramblock, embedded: version,  \
+     items. The transmatrix follows the items (an identity matrix   \
+     in the records seen), not paramblock. AutoCAD's DXF has no     \
+     transmatrix. */                                                \
+  FIELD_BL (aap_version, 90);                               \
+  FIELD_BL (num_array_items, 90);                           \
+  FIELD_T (item_classname, 1);                              \
+  REPEAT (num_array_items, array_items, Dwg_ASSOCARRAYITEM) \
+  REPEAT_BLOCK                                              \
+      AcDbAssocArrayItem_fields (array_items[rcount1]);     \
+      SET_PARENT (array_items[rcount1],                     \
+                  (Dwg_Object_ASSOCARRAYPARAMETERS *)_obj); \
+  END_REPEAT_BLOCK                                          \
+  END_REPEAT (array_items);                                 \
+  ENCODER {                                                 \
+    if (!_obj->transmatrix)                                 \
+      {                                                     \
+        _obj->transmatrix                                   \
+            = (BITCODE_BD *)calloc (16, sizeof (BITCODE_BD)); \
+        if (_obj->transmatrix)                              \
+          for (vcount = 0; vcount < 16; vcount += 5)        \
+            _obj->transmatrix[vcount] = 1.0;                \
+      }                                                     \
+  }                                                         \
+  DXF { }                                                   \
+  else { FIELD_VECTOR_N (transmatrix, BD, 16, 40); }
 
 #define AcDbAssocArrayItem_fields(item)                          \
   SUB_FIELD_BL (item, class_version, 90);                        \
-  SUB_FIELD_VECTOR_INL (items[rcount1], itemloc, BL, 3, 90);     \
+  SUB_FIELD_VECTOR_INL (item, itemloc, BL, 3, 90);               \
   SUB_FIELD_BLx (item, flags, 90);                               \
   /* TODO compare against default transmatrix */                 \
   if (FIELD_VALUE (item.is_default_transmatrix))                 \
@@ -6406,8 +6593,9 @@ DWG_OBJECT_END
     {                                                            \
       SUB_FIELD_VECTOR_N (item, rel_transform, BD, 16, 40);      \
     }                                                            \
-  if (FIELD_VALUE (item.has_h1))                                 \
-    SUB_FIELD_HANDLE (item, h1, 4, 330);                         \
+  /* always there: one soft pointer per item in AutoCAD's        \
+     R2010 and R2018 files, whatever has_h1 says */              \
+  SUB_FIELD_HANDLE (item, h1, 4, 330);                           \
   if (FIELD_VALUE (item.flags) & 0x10)                           \
     SUB_FIELD_HANDLE (item, h2, 4, 330)
 
@@ -6531,24 +6719,34 @@ DWG_OBJECT (BLOCKLOOKUPACTION)
   DECODER {
     FIELD_VALUE (numelems) = _obj->numrows * _obj->numcols;
   }
-  FIELD_VECTOR_T (exprs, T, numelems, 302)
+  // AutoCAD's R2004 and R2018 records: the rows * cols cells, then
+  // one lut entry per column (not per cell) with 3 codes, 2 flags and 2
+  // strings; 301 and 303 are DXF only. The r2007+ strings are in the string
+  // stream, not in the data stream.
   DXF { VALUE_TFF ("", 301); }
-  REPEAT (numelems, lut, Dwg_BLOCKLOOKUPACTION_lut)
+  FIELD_VECTOR_TS (exprs, T, numelems, 302);
+  REPEAT (numcols, lut, Dwg_BLOCKLOOKUPACTION_lut)
   REPEAT_BLOCK
-    BlockAction_ConnectionPts (lut[rcount1].conn_pts, 0, 3, 94, 303);
+    DXF { SUB_FIELD_T (lut[rcount1].conn_pts[0], name, 303); }
+    SUB_FIELD_BL (lut[rcount1].conn_pts[0], code, 94);
+    SUB_FIELD_BL (lut[rcount1].conn_pts[1], code, 95);
+    SUB_FIELD_BL (lut[rcount1].conn_pts[2], code, 96);
     SUB_FIELD_B (lut[rcount1], b282, 282);
+    SUB_FIELD_T (lut[rcount1].conn_pts[2], name, 305);
     SUB_FIELD_B (lut[rcount1], b281, 281);
+    SUB_FIELD_T (lut[rcount1].conn_pts[1], name, 304);
     SET_PARENT_OBJ (lut[rcount1]);
   END_REPEAT_BLOCK
   END_REPEAT (lut)
   FIELD_B (b280, 280);
-  DXF { FIELD_VECTOR_T (exprs, T, numelems, 302); }
   START_OBJECT_HANDLE_STREAM;
 DWG_OBJECT_END
 
 DWG_OBJECT (BLOCKLOOKUPPARAMETER)
   AcDbBlock1PtParameter_fields; // lgtm[cpp/use-after-free] codeql[cpp/use-after-free]
-  SUBCLASS (AcDbBlockLookupParameter)
+  // AcDbBlockLookUpParameter with "LookUp", as AutoCAD writes this marker
+  // (the CLASSES section has "Lookup")
+  SUBCLASS (AcDbBlockLookUpParameter)
   FIELD_BL (index, 0);
   FIELD_T (lookup_name, 303);
   FIELD_T (lookup_desc, 304);

@@ -769,6 +769,12 @@ downconvert_TABLESTYLE (Dwg_Object *restrict obj)
       _obj->horiz_cell_margin = _obj->sty.cellstyle.horiz_margin;
       _obj->vert_cell_margin = _obj->sty.cellstyle.vert_margin;
     }
+  else
+    {
+      // not overridden: AutoCAD writes its default cell margin
+      _obj->horiz_cell_margin = 0.06;
+      _obj->vert_cell_margin = 0.06;
+    }
 }
 
 // Fill a R2010 cell style from a pre-R2010 rowstyle.
@@ -975,6 +981,173 @@ downconvert_MLEADERSTYLE (Dwg_Object *restrict obj)
   oo->eed[idx].size = 0;
   oo->eed[idx].raw = NULL;
   oo->eed[idx].data = NULL;
+}
+
+/* A layer name of r2007+ may start with '*' (the system layer
+ *ADSK_SYSTEM_LIGHTS); AutoCAD drops it when saving to an older release. */
+void
+downconvert_layer_name (Dwg_Object *restrict obj)
+{
+  Dwg_Object_LAYER *_obj;
+  if (obj->fixedtype != DWG_TYPE_LAYER || !obj->tio.object)
+    return;
+  _obj = obj->tio.object->tio.LAYER;
+  if (!_obj->name)
+    return;
+  if (IS_FROM_TU_DWG (obj->parent))
+    {
+      BITCODE_TU wname = (BITCODE_TU)(void *)_obj->name;
+      if (wname[0] != '*' || !wname[1])
+        return;
+      memmove (wname, wname + 1, bit_wcs2len (wname) * sizeof (*wname));
+    }
+  else
+    {
+      if (_obj->name[0] != '*' || !_obj->name[1])
+        return;
+      memmove (_obj->name, _obj->name + 1, strlen (_obj->name));
+    }
+  LOG_TRACE ("LAYER.name: the leading '*' dropped\n");
+}
+
+/* Objects whose format changed in r2010 (VISUALSTYLE, SUN) carry, when
+   AutoCAD saves them to an older release, the ACAD EED
+   1000 "AcDbSavedByObjectVersion", 1070 0. */
+void
+downconvert_saved_by_version (Dwg_Object *restrict obj)
+{
+  static const char tag[] = "AcDbSavedByObjectVersion";
+  const unsigned len = sizeof (tag) - 1; // 24
+  Dwg_Data *dwg = obj->parent;
+  Dwg_Object_Object *oo;
+  Dwg_Object_APPID *appid;
+  BITCODE_H hdl;
+  BITCODE_RLL eedhdl;
+  BITCODE_BL oindex;
+  unsigned int idx, i;
+  const BITCODE_BS type = obj->fixedtype;
+  const int is_tu = dwg->header.version >= R_2007;
+
+  if (!obj->tio.object)
+    return;
+  oindex = obj->index;
+  hdl = dwg_find_tablehandle_silent (dwg, "ACAD", "APPID");
+  if (hdl)
+    eedhdl = hdl->handleref.value;
+  else
+    {
+      appid = dwg_add_APPID (dwg, "ACAD");
+      if (!appid)
+        return;
+      eedhdl = dwg_obj_generic_handlevalue (appid);
+    }
+  obj = &dwg->object[oindex]; // obj may have moved
+  if (obj->fixedtype != type || !obj->tio.object)
+    return;
+  oo = obj->tio.object;
+  if (dwg_has_eed_appid (oo, eedhdl))
+    return;
+  idx = oo->num_eed;
+  oo->num_eed += 2;
+  oo->eed = (Dwg_Eed *)realloc (oo->eed, (oo->num_eed + 1) * sizeof (Dwg_Eed));
+  memset (&oo->eed[idx], 0, 3 * sizeof (Dwg_Eed));
+  dwg_add_handle (&oo->eed[idx].handle, 5, eedhdl, NULL);
+  // string item: code, length, codepage (TV) or TU chars, + the 70 item
+  oo->eed[idx].size = is_tu ? 1 + 2 + 2 * len + 3 : 1 + 1 + 2 + len + 3;
+  oo->eed[idx].data = (Dwg_Eed_Data *)calloc (EED_SZ (8 + 2 * (len + 1)), 1);
+  oo->eed[idx].data->code = 0;
+  if (is_tu)
+    {
+      oo->eed[idx].data->u.eed_0_r2007.length = len;
+      oo->eed[idx].data->u.eed_0_r2007.is_tu = 1;
+      for (i = 0; i < len; i++)
+        oo->eed[idx].data->u.eed_0_r2007.string[i] = (DWGCHAR)tag[i];
+    }
+  else
+    {
+      oo->eed[idx].data->u.eed_0.length = len;
+      oo->eed[idx].data->u.eed_0.codepage = 30;
+      memcpy (oo->eed[idx].data->u.eed_0.string, tag, len + 1);
+    }
+  idx++;
+  oo->eed[idx].size = 0;
+  oo->eed[idx].data = (Dwg_Eed_Data *)calloc (EED_SZ (3), 1);
+  oo->eed[idx].data->code = 70;
+  oo->eed[idx].data->u.eed_70.rs = 0;
+}
+
+/* An r2000 PROXY_OBJECT written from r2004+ carries, as AutoCAD writes it,
+   the ACAD EED 1000 "AcRTDxfName", 1000 <the class's DXF name> (e.g.
+   "AECC_TREE_NODE", on every proxy). r2004 has the "cn:" class name field
+   instead, r2007+ neither. */
+void
+downconvert_proxy_dxfname (Dwg_Object *restrict obj)
+{
+  static const char tag[] = "AcRTDxfName";
+  const unsigned len = sizeof (tag) - 1; // 11
+  Dwg_Data *dwg = obj->parent;
+  Dwg_Object_Object *oo;
+  Dwg_Object_APPID *appid;
+  Dwg_Object_PROXY_OBJECT *_obj;
+  BITCODE_H hdl;
+  BITCODE_RLL eedhdl;
+  BITCODE_BL oindex;
+  const char *dxfname;
+  unsigned int idx, nlen;
+
+  if (!obj->tio.object || !obj->tio.object->tio.PROXY_OBJECT)
+    return;
+  _obj = obj->tio.object->tio.PROXY_OBJECT;
+  if (_obj->class_id < 500
+      || _obj->class_id - 500 >= (BITCODE_BL)dwg->num_classes)
+    return;
+  dxfname = dwg->dwg_class[_obj->class_id - 500].dxfname;
+  if (!dxfname || !*dxfname)
+    return;
+  nlen = (unsigned)strlen (dxfname);
+  if (nlen > 255)
+    return;
+  oindex = obj->index;
+  hdl = dwg_find_tablehandle_silent (dwg, "ACAD", "APPID");
+  if (hdl)
+    eedhdl = hdl->handleref.value;
+  else
+    {
+      appid = dwg_add_APPID (dwg, "ACAD");
+      if (!appid)
+        return;
+      eedhdl = dwg_obj_generic_handlevalue (appid);
+    }
+  obj = &dwg->object[oindex]; // obj may have moved
+  if (obj->fixedtype != DWG_TYPE_PROXY_OBJECT || !obj->tio.object)
+    return;
+  oo = obj->tio.object;
+  if (dwg_has_eed_appid (oo, eedhdl))
+    return;
+  idx = oo->num_eed;
+  oo->num_eed += 2;
+  oo->eed = (Dwg_Eed *)realloc (oo->eed, (oo->num_eed + 1) * sizeof (Dwg_Eed));
+  if (!oo->eed)
+    {
+      oo->num_eed = 0;
+      return;
+    }
+  memset (&oo->eed[idx], 0, 3 * sizeof (Dwg_Eed));
+  dwg_add_handle (&oo->eed[idx].handle, 5, eedhdl, NULL);
+  // two TV string items: code, length, codepage, chars
+  oo->eed[idx].size = (1 + 1 + 2 + len) + (1 + 1 + 2 + nlen);
+  oo->eed[idx].data = (Dwg_Eed_Data *)calloc (EED_SZ (8 + len + 1), 1);
+  oo->eed[idx].data->code = 0;
+  oo->eed[idx].data->u.eed_0.length = len;
+  oo->eed[idx].data->u.eed_0.codepage = 30;
+  memcpy (oo->eed[idx].data->u.eed_0.string, tag, len + 1);
+  idx++;
+  oo->eed[idx].size = 0;
+  oo->eed[idx].data = (Dwg_Eed_Data *)calloc (EED_SZ (8 + nlen + 1), 1);
+  oo->eed[idx].data->code = 0;
+  oo->eed[idx].data->u.eed_0.length = nlen;
+  oo->eed[idx].data->u.eed_0.codepage = 30;
+  memcpy (oo->eed[idx].data->u.eed_0.string, dxfname, nlen + 1);
 }
 
 /* R13/R14 have the standard names upper case: BYBLOCK, BYLAYER, CONTINUOUS,
@@ -1204,7 +1377,7 @@ downconvert_DIMSTYLE (Bit_Chain *restrict dat, Dwg_Object *restrict obj)
   Dwg_Object_DIMSTYLE *_obj;
   Dwg_Object_Object *oo;
   Dwg_Object_APPID *appid;
-  BITCODE_RLL eedhdl1, eedhdl2, eedhdl3;
+  BITCODE_RLL eedhdl1;
   BITCODE_BL oindex;
   BITCODE_H hdl;
   unsigned int idx;
@@ -1231,30 +1404,6 @@ downconvert_DIMSTYLE (Bit_Chain *restrict dat, Dwg_Object *restrict obj)
       appid = dwg_add_APPID (dwg, "AcadAnnotative");
       eedhdl1 = dwg_obj_generic_handlevalue (appid);
       LOG_TRACE ("Added APPID.AcadAnnotative (" FORMAT_HV ")\n", eedhdl1);
-    }
-  hdl = dwg_find_tablehandle_silent (dwg, "ACAD_DSTYLE_DIMJAG", "APPID");
-  if (hdl)
-    {
-      eedhdl2 = hdl->handleref.value;
-      LOG_TRACE ("Use APPID.ACAD_DSTYLE_DIMJAG (" FORMAT_HV ")\n", eedhdl2);
-    }
-  else
-    {
-      appid = dwg_add_APPID (dwg, "ACAD_DSTYLE_DIMJAG");
-      eedhdl2 = dwg_obj_generic_handlevalue (appid);
-      LOG_TRACE ("Added APPID.ACAD_DSTYLE_DIMJAG (" FORMAT_HV ")\n", eedhdl2);
-    }
-  hdl = dwg_find_tablehandle_silent (dwg, "ACAD_DSTYLE_DIMTALN", "APPID");
-  if (hdl)
-    {
-      eedhdl3 = hdl->handleref.value;
-      LOG_TRACE ("Use APPID.ACAD_DSTYLE_DIMTALN (" FORMAT_HV ")\n", eedhdl3);
-    }
-  else
-    {
-      appid = dwg_add_APPID (dwg, "ACAD_DSTYLE_DIMTALN");
-      eedhdl3 = dwg_obj_generic_handlevalue (appid);
-      LOG_TRACE ("Added APPID.ACAD_DSTYLE_DIMTALN (" FORMAT_HV ")\n", eedhdl3);
     }
   // obj may have moved, but dirty_refs is 0 (a dirty_objs is useless)
   obj = &dwg->object[oindex];
@@ -1308,65 +1457,6 @@ downconvert_DIMSTYLE (Bit_Chain *restrict dat, Dwg_Object *restrict obj)
       oo->eed[idx].data = (Dwg_Eed_Data *)calloc (EED_SZ (2), 1);
       oo->eed[idx].data->code = 2;
       oo->eed[idx].data->u.eed_2.close = 1;
-      idx++;
-      oo->eed[idx].size = 0;
-      oo->eed[idx].data = NULL;
-      oo->eed[idx].raw = NULL;
-    }
-
-  if (!dwg_has_eed_appid (oo, eedhdl2))
-    {
-      LOG_TRACE ("Add EED for ACAD_DSTYLE_DIMJAG to " FORMAT_HV "\n",
-                 obj->handle.value);
-      oo->num_eed += 2;
-      if (idx)
-        oo->eed = (Dwg_Eed *)realloc (oo->eed,
-                                      (oo->num_eed + 1) * sizeof (Dwg_Eed));
-      else
-        oo->eed = (Dwg_Eed *)calloc (3, sizeof (Dwg_Eed));
-      // DIMJAG
-      dwg_add_handle (&oo->eed[idx].handle, 5, eedhdl2, NULL);
-      oo->eed[idx].size = 12;
-      oo->eed[idx].raw = NULL;
-      oo->eed[idx].data = (Dwg_Eed_Data *)calloc (EED_SZ (3), 1);
-      oo->eed[idx].data->code = 70;
-      //_obj = oo->tio.DIMSTYLE;
-      oo->eed[idx].data->u.eed_70.rs = 388; // FIXME Which value?
-      idx++;
-      oo->eed[idx].size = 0;
-      oo->eed[idx].raw = NULL;
-      oo->eed[idx].data = (Dwg_Eed_Data *)calloc (EED_SZ (9), 1);
-      oo->eed[idx].data->code = 40;
-      oo->eed[idx].data->u.eed_40.real = 1.5; // FIXME Which value?
-      idx++;
-      oo->eed[idx].size = 0;
-      oo->eed[idx].data = NULL;
-      oo->eed[idx].raw = NULL;
-    }
-  if (!dwg_has_eed_appid (oo, eedhdl3))
-    {
-      LOG_TRACE ("Add EED for ACAD_DSTYLE_DIMTALN to " FORMAT_HV "\n",
-                 obj->handle.value);
-      oo->num_eed += 2;
-      if (idx)
-        oo->eed = (Dwg_Eed *)realloc (oo->eed,
-                                      (oo->num_eed + 1) * sizeof (Dwg_Eed));
-      else
-        oo->eed = (Dwg_Eed *)calloc (3, sizeof (Dwg_Eed));
-      // DIMTALN
-      dwg_add_handle (&oo->eed[idx].handle, 5, eedhdl2, NULL);
-      oo->eed[idx].size = 6;
-      oo->eed[idx].raw = NULL;
-      oo->eed[idx].data = (Dwg_Eed_Data *)calloc (EED_SZ (3), 1);
-      oo->eed[idx].data->code = 70;
-      //_obj = oo->tio.DIMSTYLE;
-      oo->eed[idx].data->u.eed_70.rs = 392; // FIXME Which value?
-      idx++;
-      oo->eed[idx].size = 0;
-      oo->eed[idx].raw = NULL;
-      oo->eed[idx].data = (Dwg_Eed_Data *)calloc (EED_SZ (3), 1);
-      oo->eed[idx].data->code = 70;
-      oo->eed[idx].data->u.eed_70.rs = 0; // FIXME Which value?
       idx++;
       oo->eed[idx].size = 0;
       oo->eed[idx].data = NULL;
@@ -1469,6 +1559,13 @@ lwpolyline_to_polyline (Dwg_Data *restrict dwg, const BITCODE_BL idx)
   BITCODE_BL num_objects = dwg->num_objects;
   Dwg_Object *tmp;
 
+  /* entmode 1 (paper space) and 2 (model space) have no ownerhandle. A paper
+     space LWPOLYLINE stays in the paper space, whose entities[] then refer to
+     the new POLYLINE, not to a freed handle; entmode 2, and any entity
+     without a valid owner, goes to the model space. */
+  if ((!owner || owner->fixedtype != DWG_TYPE_BLOCK_HEADER)
+      && ent->entmode == 1)
+    owner = dwg_paper_space_object (dwg);
   if (!owner || owner->fixedtype != DWG_TYPE_BLOCK_HEADER)
     owner = dwg_model_space_object (dwg);
   /* dwg_insert_entity() requires the model space. A fuzzed DWG may have none.

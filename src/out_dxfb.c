@@ -325,6 +325,8 @@ dxfb_convert_TU (const Bit_Chain *restrict dat, const BITCODE_TU wstr)
   }
 #define FIELD_TF(nam, len, dxf) VALUE_TV (_obj->nam, dxf)
 #define FIELD_TFF(nam, len, dxf) VALUE_TV (_obj->nam, dxf)
+// pre-r13 fixed-size strings are TU from an r2007+ DWG
+#define FIELD_TFv(nam, len, dxf) FIELD_T (nam, dxf)
 
 // skip if 0
 #define FIELD_RD0(nam, dxf) FIELD_BD0 (nam, dxf)
